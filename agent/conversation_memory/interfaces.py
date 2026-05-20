@@ -1,9 +1,9 @@
 """Backward-compatible imports for conversation memory protocols."""
 
-from nanobot.agent.conversation_memory.extractors.base import MemoryExtractor
-from nanobot.agent.conversation_memory.managers.base import MemoryManager, MemoryPolicy
-from nanobot.agent.conversation_memory.retrievers.base import MemoryRetriever
-from nanobot.agent.conversation_memory.stores.base import MemoryStore
+from membot.agent.conversation_memory.extractors.base import MemoryExtractor
+from membot.agent.conversation_memory.managers.base import MemoryManager, MemoryPolicy
+from membot.agent.conversation_memory.retrievers.base import MemoryRetriever
+from membot.agent.conversation_memory.stores.base import MemoryStore
 
 __all__ = [
     "MemoryExtractor",

@@ -12,11 +12,11 @@ from typing import Any
 import httpx
 from loguru import logger
 
-from nanobot.bus.events import OutboundMessage
-from nanobot.bus.queue import MessageBus
-from nanobot.channels.base import BaseChannel
-from nanobot.config.schema import MochatConfig
-from nanobot.utils.helpers import get_data_path
+from membot.bus.events import OutboundMessage
+from membot.bus.queue import MessageBus
+from membot.channels.base import BaseChannel
+from membot.config.schema import MochatConfig
+from membot.utils.helpers import get_data_path
 
 try:
     import socketio

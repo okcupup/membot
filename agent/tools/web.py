@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from nanobot.agent.tools.base import Tool
+from membot.agent.tools.base import Tool
 
 # Shared constants
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_2) AppleWebKit/537.36"
@@ -70,7 +70,7 @@ class WebSearchTool(Tool):
         if not self.api_key:
             return (
                 "Error: Brave Search API key not configured. "
-                "Set it in ~/.nanobot/config.json under tools.web.search.apiKey "
+                "Set it in ~/.membot/config.json under tools.web.search.apiKey "
                 "(or export BRAVE_API_KEY), then restart the gateway."
             )
         

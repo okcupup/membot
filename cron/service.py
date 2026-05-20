@@ -18,16 +18,16 @@
 使用示例：
 
 >>> from pathlib import Path
->>> from nanobot.cron.service import CronService
+>>> from membot.cron.service import CronService
 >>> async def on_job(job):
 ...     # 这里通常会把 job.payload.message 发送到对应 channel/to
 ...     print('Running', job.id, job.payload.message)
 ...     return 'ok'
 ...
->>> svc = CronService(Path.home() / '.nanobot' / 'cron_jobs.json', on_job=on_job)
+>>> svc = CronService(Path.home() / '.membot' / 'cron_jobs.json', on_job=on_job)
 >>> await svc.start()
 >>> # 添加每天 9 点执行的 cron 任务
->>> from nanobot.cron.types import CronSchedule
+>>> from membot.cron.types import CronSchedule
 >>> job = svc.add_job('早会提醒', CronSchedule(kind='cron', expr='0 9 * * *', tz='Asia/Shanghai'), '开始开会', deliver=True, channel='cli', to='direct')
 
 注意：示例中的 `on_job` 一般会被注入为异步函数，用来将任务执行委托给 agent loop 或者消息总线。
@@ -43,7 +43,7 @@ from typing import Any, Callable, Coroutine
 
 from loguru import logger
 
-from nanobot.cron.types import CronJob, CronJobState, CronPayload, CronSchedule, CronStore
+from membot.cron.types import CronJob, CronJobState, CronPayload, CronSchedule, CronStore
 
 
 def _now_ms() -> int:
@@ -114,7 +114,7 @@ class CronService:
         返回服务状态（是否运行、任务数、下次唤醒时间）。
 
     样例（最小启动）：
-    >>> svc = CronService(Path('~/.nanobot/cron_jobs.json').expanduser(), on_job=on_job_handler)
+    >>> svc = CronService(Path('~/.membot/cron_jobs.json').expanduser(), on_job=on_job_handler)
     >>> await svc.start()
     >>> svc.add_job(...)
     >>> await svc.run_job(job_id)

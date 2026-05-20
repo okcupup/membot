@@ -5,9 +5,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Mapping, Sequence
 
-from nanobot.agent.conversation_memory.extractors.base import MemoryExtractor
-from nanobot.agent.conversation_memory.models import MemoryRecord, MemoryScope, MemorySource
-from nanobot.agent.conversation_memory.schemas.raw_message import RAW_MESSAGE_KIND
+from membot.agent.conversation_memory.extractors.base import MemoryExtractor
+from membot.agent.conversation_memory.models import MemoryRecord, MemoryScope, MemorySource
+from membot.agent.conversation_memory.schemas.raw_message import RAW_MESSAGE_KIND
 
 
 def build_raw_message_record(

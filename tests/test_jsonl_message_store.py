@@ -7,9 +7,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from nanobot.agent.conversation_memory.models import MemoryRecord
-from nanobot.agent.conversation_memory.schemas.raw_message import RAW_MESSAGE_KIND
-from nanobot.agent.conversation_memory.stores.jsonl import JsonlMessageStore
+from membot.agent.conversation_memory.models import MemoryRecord
+from membot.agent.conversation_memory.schemas.raw_message import RAW_MESSAGE_KIND
+from membot.agent.conversation_memory.stores.jsonl import JsonlMessageStore
 
 
 _TEST_TMP = Path(__file__).resolve().parents[1] / ".test_tmp"

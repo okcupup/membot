@@ -1,7 +1,7 @@
 """Configuration schema using Pydantic.
 
 中文说明：
-本模块使用 Pydantic 定义 nanobot 的配置模型（配置项包括 agent 默认值、
+本模块使用 Pydantic 定义 membot 的配置模型（配置项包括 agent 默认值、
 各渠道配置、LLM provider 配置以及工具、网关等设置）。
 主要职责：
 - 定义配置数据结构（便于验证和文档化）；
@@ -235,7 +235,7 @@ class ChannelsConfig(Base):
 class AgentDefaults(Base):
     """Default agent configuration."""
 
-    workspace: str = "~/.nanobot/workspace"
+    workspace: str = "~/.membot/workspace"
     model: str = "anthropic/claude-opus-4-5"
     provider: str = "auto"  # Provider name (e.g. "anthropic", "openrouter") or "auto" for auto-detection
     max_tokens: int = 8192
@@ -352,7 +352,7 @@ class ToolsConfig(Base):
 
 
 class Config(BaseSettings):
-    """Root configuration for nanobot."""
+    """Root configuration for membot."""
     # 中文说明：
     # 顶层配置对象，组合了 agents、channels、providers、gateway 和 tools
     # 等子配置。该类还封装了一些便捷方法用于根据模型名决定要使用的
@@ -381,7 +381,7 @@ class Config(BaseSettings):
         # 4. 回退：按 PROVIDERS 顺序选择第一个在配置中有 api_key 的 provider（OAuth 类型的 provider 不参与回退）。
         #
         # 返回值：元组 (ProviderConfig instance or None, provider registry name or None)
-        from nanobot.providers.registry import PROVIDERS
+        from membot.providers.registry import PROVIDERS
 
         forced = self.agents.defaults.provider
         if forced != "auto":
@@ -445,7 +445,7 @@ class Config(BaseSettings):
         # 中文说明：获取匹配 provider 的 api_base；
         # 对于 gateway 类型的 provider，如果用户没有在配置中设置 api_base，
         # 会返回 registry 中的 spec.default_api_base（例如 openrouter 的默认 URL）。
-        from nanobot.providers.registry import find_by_name
+        from membot.providers.registry import find_by_name
 
         p, name = self._match_provider(model)
         if p and p.api_base:
@@ -459,4 +459,4 @@ class Config(BaseSettings):
                 return spec.default_api_base
         return None
 
-    model_config = ConfigDict(env_prefix="NANOBOT_", env_nested_delimiter="__")
+    model_config = ConfigDict(env_prefix="membot_", env_nested_delimiter="__")

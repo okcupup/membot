@@ -1,7 +1,7 @@
-"""Utility functions for nanobot.
+"""Utility functions for membot.
 
 中文说明：
-本模块包含 nanobot 使用的若干小工具函数，主要用于路径/工作区管理、
+本模块包含 membot 使用的若干小工具函数，主要用于路径/工作区管理、
 文件名安全化、时间戳生成以及将内置模板同步到用户工作区。
 这些函数设计为小而可复用，且对不存在的目录具有容错能力（会自动创建）。
 """
@@ -29,22 +29,22 @@ def ensure_dir(path: Path) -> Path:
 
 
 def get_data_path() -> Path:
-    """~/.nanobot data directory.
+    """~/.membot data directory.
 
     中文说明：
-    返回 nanobot 的用户数据目录（默认位于用户主目录下的 `.nanobot`），并确保该目录存在。
+    返回 membot 的用户数据目录（默认位于用户主目录下的 `.membot`），并确保该目录存在。
     """
-    return ensure_dir(Path.home() / ".nanobot")
+    return ensure_dir(Path.home() / ".membot")
 
 
 def get_workspace_path(workspace: str | None = None) -> Path:
-    """Resolve and ensure workspace path. Defaults to ~/.nanobot/workspace.
+    """Resolve and ensure workspace path. Defaults to ~/.membot/workspace.
 
     中文说明：
     如果传入 `workspace` 字符串，则展开（支持 `~`），并返回对应的 Path；否则使用
-    默认的 `~/.nanobot/workspace`。函数会确保目标目录存在。
+    默认的 `~/.membot/workspace`。函数会确保目标目录存在。
     """
-    path = Path(workspace).expanduser() if workspace else Path.home() / ".nanobot" / "workspace"
+    path = Path(workspace).expanduser() if workspace else Path.home() / ".membot" / "workspace"
     return ensure_dir(path)
 
 
@@ -81,7 +81,7 @@ def sync_workspace_templates(workspace: Path, silent: bool = False) -> list[str]
     返回值是一个相对路径列表，表示已经创建的文件（相对于 workspace）。
 
     重要细节：
-    - 使用 `importlib.resources.files('nanobot')` 读取包内资源；在某些开发环境
+    - 使用 `importlib.resources.files('membot')` 读取包内资源；在某些开发环境
       中（未安装为 package）此方法可能失败，函数会在失败时返回空列表以便优雅降级。
     - 会确保 `workspace/memory/HISTORY.md`（空文件）和 `workspace/memory/MEMORY.md`（模板）存在，
       并确保 `workspace/skills` 目录存在。
@@ -90,7 +90,7 @@ def sync_workspace_templates(workspace: Path, silent: bool = False) -> list[str]
     """
     from importlib.resources import files as pkg_files
     try:
-        tpl = pkg_files("nanobot") / "templates"
+        tpl = pkg_files("membot") / "templates"
     except Exception:
         return []
     if not tpl.is_dir():

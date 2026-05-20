@@ -12,10 +12,10 @@ from urllib.parse import unquote, urlparse
 from loguru import logger
 import httpx
 
-from nanobot.bus.events import OutboundMessage
-from nanobot.bus.queue import MessageBus
-from nanobot.channels.base import BaseChannel
-from nanobot.config.schema import DingTalkConfig
+from membot.bus.events import OutboundMessage
+from membot.bus.queue import MessageBus
+from membot.channels.base import BaseChannel
+from membot.config.schema import DingTalkConfig
 
 try:
     from dingtalk_stream import (
@@ -37,10 +37,10 @@ except ImportError:
     ChatbotMessage = None  # type: ignore[assignment,misc]
 
 
-class NanobotDingTalkHandler(CallbackHandler):
+class membotDingTalkHandler(CallbackHandler):
     """
     Standard DingTalk Stream SDK Callback Handler.
-    Parses incoming messages and forwards them to the Nanobot channel.
+    Parses incoming messages and forwards them to the membot channel.
     """
 
     def __init__(self, channel: "DingTalkChannel"):
@@ -72,7 +72,7 @@ class NanobotDingTalkHandler(CallbackHandler):
 
             logger.info("Received DingTalk message from {} ({}): {}", sender_name, sender_id, content)
 
-            # Forward to Nanobot via _on_message (non-blocking).
+            # Forward to membot via _on_message (non-blocking).
             # Store reference to prevent GC before task completes.
             task = asyncio.create_task(
                 self.channel._on_message(content, sender_id, sender_name)
@@ -141,7 +141,7 @@ class DingTalkChannel(BaseChannel):
             self._client = DingTalkStreamClient(credential)
 
             # Register standard handler
-            handler = NanobotDingTalkHandler(self)
+            handler = membotDingTalkHandler(self)
             self._client.register_callback_handler(ChatbotMessage.TOPIC, handler)
 
             logger.info("DingTalk bot started with Stream Mode")
@@ -333,7 +333,7 @@ class DingTalkChannel(BaseChannel):
             token,
             chat_id,
             "sampleMarkdown",
-            {"text": content, "title": "Nanobot Reply"},
+            {"text": content, "title": "membot Reply"},
         )
 
     async def _send_media_ref(self, token: str, chat_id: str, media_ref: str) -> bool:
@@ -418,7 +418,7 @@ class DingTalkChannel(BaseChannel):
             )
 
     async def _on_message(self, content: str, sender_id: str, sender_name: str) -> None:
-        """Handle incoming message (called by NanobotDingTalkHandler).
+        """Handle incoming message (called by membotDingTalkHandler).
 
         Delegates to BaseChannel._handle_message() which enforces allow_from
         permission checks before publishing to the bus.

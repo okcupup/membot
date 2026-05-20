@@ -5,8 +5,8 @@ from typing import Any
 
 from loguru import logger
 
-from nanobot.bus.events import InboundMessage, OutboundMessage
-from nanobot.bus.queue import MessageBus
+from membot.bus.events import InboundMessage, OutboundMessage
+from membot.bus.queue import MessageBus
 
 
 class BaseChannel(ABC):
@@ -14,7 +14,7 @@ class BaseChannel(ABC):
     Abstract base class for chat channel implementations.
     
     Each channel (Telegram, Discord, etc.) should implement this interface
-    to integrate with the nanobot message bus.
+    to integrate with the membot message bus.
     """
     
     name: str = "base"

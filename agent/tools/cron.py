@@ -8,7 +8,7 @@
   时，模型可以调用本工具以编程方式创建对应的 Cron job。
 
 实现细节:
-- 本工具是对 `nanobot.cron.service.CronService` 的轻量封装，暴露三个动作:
+- 本工具是对 `membot.cron.service.CronService` 的轻量封装，暴露三个动作:
   - add: 创建任务（支持每 N 秒、cron 表达式、一次性 at 时间）
   - list: 列出当前任务
   - remove: 删除指定任务
@@ -37,9 +37,9 @@
 
 from typing import Any
 
-from nanobot.agent.tools.base import Tool
-from nanobot.cron.service import CronService
-from nanobot.cron.types import CronSchedule
+from membot.agent.tools.base import Tool
+from membot.cron.service import CronService
+from membot.cron.types import CronSchedule
 
 
 class CronTool(Tool):

@@ -8,8 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from nanobot.agent.memory import MemoryStore
-from nanobot.agent.skills import SkillsLoader
+from membot.agent.memory import MemoryStore
+from membot.agent.skills import SkillsLoader
 
 
 class ContextBuilder:
@@ -58,9 +58,9 @@ Skills with available="false" need dependencies installed first - you can try in
         system = platform.system()
         runtime = f"{'macOS' if system == 'Darwin' else system} {platform.machine()}, Python {platform.python_version()}"
         
-        return f"""# nanobot 🐈
+        return f"""# membot 🐈
 
-You are nanobot, a helpful AI assistant.
+You are membot, a helpful AI assistant.
 
 ## Runtime
 {runtime}
@@ -71,7 +71,7 @@ Your workspace is at: {workspace_path}
 - History log: {workspace_path}/memory/HISTORY.md (grep-searchable). Each entry starts with [YYYY-MM-DD HH:MM].
 - Custom skills: {workspace_path}/skills/{{skill-name}}/SKILL.md
 
-## nanobot Guidelines
+## membot Guidelines
 - State intent before tool calls, but NEVER predict or claim results before receiving them.
 - Before modifying a file, read it first. Do not assume files or directories exist.
 - After writing or editing a file, re-read it if accuracy matters.

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol, Sequence
 
-from nanobot.agent.conversation_memory.models import MemoryRecord, MemorySource
+from membot.agent.conversation_memory.models import MemoryRecord, MemorySource
 
 
 class MemoryExtractor(Protocol):

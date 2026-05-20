@@ -4,7 +4,7 @@ import difflib
 from pathlib import Path
 from typing import Any
 
-from nanobot.agent.tools.base import Tool
+from membot.agent.tools.base import Tool
 
 
 def _resolve_path(path: str, workspace: Path | None = None, allowed_dir: Path | None = None) -> Path:

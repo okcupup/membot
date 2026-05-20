@@ -1,7 +1,7 @@
 """Configuration loading utilities.
 
 中文说明：
-本模块负责加载与保存 nanobot 的配置（JSON 文件），并在发现旧版配置结构时
+本模块负责加载与保存 membot 的配置（JSON 文件），并在发现旧版配置结构时
 执行必要的迁移（backwards-compatible migration）。函数保持行为向后兼容，
 在解析失败时会回退到默认配置以保证程序可用性。
 """
@@ -9,25 +9,25 @@
 import json
 from pathlib import Path
 
-from nanobot.config.schema import Config
+from membot.config.schema import Config
 
 
 def get_config_path() -> Path:
     """Get the default configuration file path.
 
-    中文说明：返回默认的配置文件路径 `~/.nanobot/config.json`。调用方可以用
+    中文说明：返回默认的配置文件路径 `~/.membot/config.json`。调用方可以用
     这个路径作为默认值，如果用户没有显式指定配置文件路径。
     """
-    return Path.home() / ".nanobot" / "config.json"
+    return Path.home() / ".membot" / "config.json"
 
 
 def get_data_dir() -> Path:
-    """Get the nanobot data directory.
+    """Get the membot data directory.
 
-    中文说明：代理到 `nanobot.utils.helpers.get_data_path()`，该函数会确保
-    `~/.nanobot` 目录存在并返回对应的 Path 对象。
+    中文说明：代理到 `membot.utils.helpers.get_data_path()`，该函数会确保
+    `~/.membot` 目录存在并返回对应的 Path 对象。
     """
-    from nanobot.utils.helpers import get_data_path
+    from membot.utils.helpers import get_data_path
     return get_data_path()
 
 

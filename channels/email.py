@@ -16,10 +16,10 @@ from typing import Any
 
 from loguru import logger
 
-from nanobot.bus.events import OutboundMessage
-from nanobot.bus.queue import MessageBus
-from nanobot.channels.base import BaseChannel
-from nanobot.config.schema import EmailConfig
+from membot.bus.events import OutboundMessage
+from membot.bus.queue import MessageBus
+from membot.channels.base import BaseChannel
+from membot.config.schema import EmailConfig
 
 
 class EmailChannel(BaseChannel):
@@ -126,7 +126,7 @@ class EmailChannel(BaseChannel):
             logger.info("Skip automatic email reply to {}: auto_reply_enabled is false", to_addr)
             return
 
-        base_subject = self._last_subject_by_chat.get(to_addr, "nanobot reply")
+        base_subject = self._last_subject_by_chat.get(to_addr, "membot reply")
         subject = self._reply_subject(base_subject)
         if msg.metadata and isinstance(msg.metadata.get("subject"), str):
             override = msg.metadata["subject"].strip()
@@ -401,7 +401,7 @@ class EmailChannel(BaseChannel):
         return html.unescape(text)
 
     def _reply_subject(self, base_subject: str) -> str:
-        subject = (base_subject or "").strip() or "nanobot reply"
+        subject = (base_subject or "").strip() or "membot reply"
         prefix = self.config.subject_prefix or "Re: "
         if subject.lower().startswith("re:"):
             return subject

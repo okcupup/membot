@@ -10,10 +10,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Sequence
 
-from nanobot.agent.conversation_memory.models import MemoryRecord
-from nanobot.agent.conversation_memory.schemas.raw_message import RAW_MESSAGE_KIND
-from nanobot.agent.conversation_memory.stores.base import MemoryStore
-from nanobot.session.manager import Session, SessionManager
+from membot.agent.conversation_memory.models import MemoryRecord
+from membot.agent.conversation_memory.schemas.raw_message import RAW_MESSAGE_KIND
+from membot.agent.conversation_memory.stores.base import MemoryStore
+from membot.session.manager import Session, SessionManager
 
 
 class JsonlMessageStore(MemoryStore):

@@ -12,10 +12,10 @@ from slack_sdk.web.async_client import AsyncWebClient
 
 from slackify_markdown import slackify_markdown
 
-from nanobot.bus.events import OutboundMessage
-from nanobot.bus.queue import MessageBus
-from nanobot.channels.base import BaseChannel
-from nanobot.config.schema import SlackConfig
+from membot.bus.events import OutboundMessage
+from membot.bus.queue import MessageBus
+from membot.channels.base import BaseChannel
+from membot.config.schema import SlackConfig
 
 
 class SlackChannel(BaseChannel):

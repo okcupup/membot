@@ -5,21 +5,21 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Sequence
 
-from nanobot.agent.conversation_memory.extractors.base import MemoryExtractor
-from nanobot.agent.conversation_memory.extractors.raw_message import RawMessageExtractor
-from nanobot.agent.conversation_memory.formatters.openai_messages import OpenAIMessageFormatter
-from nanobot.agent.conversation_memory.managers.base import MemoryManager
-from nanobot.agent.conversation_memory.managers.simple import SimpleMessageManager
-from nanobot.agent.conversation_memory.models import MemoryQuery, MemoryRecord, MemorySource
-from nanobot.agent.conversation_memory.retrievers.base import MemoryRetriever
-from nanobot.agent.conversation_memory.retrievers.recent import RecentMessageRetriever
-from nanobot.agent.conversation_memory.sanitizer import (
+from membot.agent.conversation_memory.extractors.base import MemoryExtractor
+from membot.agent.conversation_memory.extractors.raw_message import RawMessageExtractor
+from membot.agent.conversation_memory.formatters.openai_messages import OpenAIMessageFormatter
+from membot.agent.conversation_memory.managers.base import MemoryManager
+from membot.agent.conversation_memory.managers.simple import SimpleMessageManager
+from membot.agent.conversation_memory.models import MemoryQuery, MemoryRecord, MemorySource
+from membot.agent.conversation_memory.retrievers.base import MemoryRetriever
+from membot.agent.conversation_memory.retrievers.recent import RecentMessageRetriever
+from membot.agent.conversation_memory.sanitizer import (
     DEFAULT_TOOL_RESULT_MAX_CHARS,
     sanitize_messages_for_storage,
 )
-from nanobot.agent.conversation_memory.stores.base import MemoryStore
-from nanobot.agent.conversation_memory.stores.jsonl import JsonlMessageStore
-from nanobot.session.manager import SessionManager
+from membot.agent.conversation_memory.stores.base import MemoryStore
+from membot.agent.conversation_memory.stores.jsonl import JsonlMessageStore
+from membot.session.manager import SessionManager
 
 
 class ConversationMemoryEngine:

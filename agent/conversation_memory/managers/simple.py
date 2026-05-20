@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Sequence
 
-from nanobot.agent.conversation_memory.managers.base import MemoryManager
-from nanobot.agent.conversation_memory.models import MemoryRecord
+from membot.agent.conversation_memory.managers.base import MemoryManager
+from membot.agent.conversation_memory.models import MemoryRecord
 
 
 class SimpleMessageManager(MemoryManager):

@@ -1,4 +1,4 @@
-"""MCP client: connects to MCP servers and wraps their tools as native nanobot tools."""
+"""MCP client: connects to MCP servers and wraps their tools as native membot tools."""
 
 import asyncio
 from contextlib import AsyncExitStack
@@ -7,12 +7,12 @@ from typing import Any
 import httpx
 from loguru import logger
 
-from nanobot.agent.tools.base import Tool
-from nanobot.agent.tools.registry import ToolRegistry
+from membot.agent.tools.base import Tool
+from membot.agent.tools.registry import ToolRegistry
 
 
 class MCPToolWrapper(Tool):
-    """Wraps a single MCP server tool as a nanobot Tool."""
+    """Wraps a single MCP server tool as a membot Tool."""
 
     def __init__(self, session, server_name: str, tool_def, tool_timeout: int = 30):
         self._session = session

@@ -1,6 +1,6 @@
-# nanobot Skills
+# membot Skills
 
-This directory contains built-in skills that extend nanobot's capabilities.
+This directory contains built-in skills that extend membot's capabilities.
 
 ## Skill Format
 

@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from nanobot.agent.conversation_memory.schemas.fact import FACT_KIND
-from nanobot.agent.conversation_memory.schemas.preference import PREFERENCE_KIND
-from nanobot.agent.conversation_memory.schemas.raw_message import RAW_MESSAGE_KIND
-from nanobot.agent.conversation_memory.schemas.summary import SUMMARY_KIND
-from nanobot.agent.conversation_memory.schemas.task import TASK_KIND
+from membot.agent.conversation_memory.schemas.fact import FACT_KIND
+from membot.agent.conversation_memory.schemas.preference import PREFERENCE_KIND
+from membot.agent.conversation_memory.schemas.raw_message import RAW_MESSAGE_KIND
+from membot.agent.conversation_memory.schemas.summary import SUMMARY_KIND
+from membot.agent.conversation_memory.schemas.task import TASK_KIND
 
 
 @dataclass(frozen=True, slots=True)

@@ -7,10 +7,10 @@ from typing import Any
 
 from loguru import logger
 
-from nanobot.bus.events import OutboundMessage
-from nanobot.bus.queue import MessageBus
-from nanobot.channels.base import BaseChannel
-from nanobot.config.schema import Config
+from membot.bus.events import OutboundMessage
+from membot.bus.queue import MessageBus
+from membot.channels.base import BaseChannel
+from membot.config.schema import Config
 
 
 class ChannelManager:
@@ -37,7 +37,7 @@ class ChannelManager:
         # Telegram channel
         if self.config.channels.telegram.enabled:
             try:
-                from nanobot.channels.telegram import TelegramChannel
+                from membot.channels.telegram import TelegramChannel
                 self.channels["telegram"] = TelegramChannel(
                     self.config.channels.telegram,
                     self.bus,
@@ -50,7 +50,7 @@ class ChannelManager:
         # WhatsApp channel
         if self.config.channels.whatsapp.enabled:
             try:
-                from nanobot.channels.whatsapp import WhatsAppChannel
+                from membot.channels.whatsapp import WhatsAppChannel
                 self.channels["whatsapp"] = WhatsAppChannel(
                     self.config.channels.whatsapp, self.bus
                 )
@@ -61,7 +61,7 @@ class ChannelManager:
         # Discord channel
         if self.config.channels.discord.enabled:
             try:
-                from nanobot.channels.discord import DiscordChannel
+                from membot.channels.discord import DiscordChannel
                 self.channels["discord"] = DiscordChannel(
                     self.config.channels.discord, self.bus
                 )
@@ -72,7 +72,7 @@ class ChannelManager:
         # Feishu channel
         if self.config.channels.feishu.enabled:
             try:
-                from nanobot.channels.feishu import FeishuChannel
+                from membot.channels.feishu import FeishuChannel
                 self.channels["feishu"] = FeishuChannel(
                     self.config.channels.feishu, self.bus
                 )
@@ -83,7 +83,7 @@ class ChannelManager:
         # Mochat channel
         if self.config.channels.mochat.enabled:
             try:
-                from nanobot.channels.mochat import MochatChannel
+                from membot.channels.mochat import MochatChannel
 
                 self.channels["mochat"] = MochatChannel(
                     self.config.channels.mochat, self.bus
@@ -95,7 +95,7 @@ class ChannelManager:
         # DingTalk channel
         if self.config.channels.dingtalk.enabled:
             try:
-                from nanobot.channels.dingtalk import DingTalkChannel
+                from membot.channels.dingtalk import DingTalkChannel
                 self.channels["dingtalk"] = DingTalkChannel(
                     self.config.channels.dingtalk, self.bus
                 )
@@ -106,7 +106,7 @@ class ChannelManager:
         # Email channel
         if self.config.channels.email.enabled:
             try:
-                from nanobot.channels.email import EmailChannel
+                from membot.channels.email import EmailChannel
                 self.channels["email"] = EmailChannel(
                     self.config.channels.email, self.bus
                 )
@@ -117,7 +117,7 @@ class ChannelManager:
         # Slack channel
         if self.config.channels.slack.enabled:
             try:
-                from nanobot.channels.slack import SlackChannel
+                from membot.channels.slack import SlackChannel
                 self.channels["slack"] = SlackChannel(
                     self.config.channels.slack, self.bus
                 )
@@ -128,7 +128,7 @@ class ChannelManager:
         # QQ channel
         if self.config.channels.qq.enabled:
             try:
-                from nanobot.channels.qq import QQChannel
+                from membot.channels.qq import QQChannel
                 self.channels["qq"] = QQChannel(
                     self.config.channels.qq,
                     self.bus,
@@ -140,7 +140,7 @@ class ChannelManager:
         # Matrix channel
         if self.config.channels.matrix.enabled:
             try:
-                from nanobot.channels.matrix import MatrixChannel
+                from membot.channels.matrix import MatrixChannel
                 self.channels["matrix"] = MatrixChannel(
                     self.config.channels.matrix,
                     self.bus,

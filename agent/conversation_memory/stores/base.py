@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Protocol, Sequence
 
-from nanobot.agent.conversation_memory.models import MemoryRecord
-from nanobot.session.manager import Session
+from membot.agent.conversation_memory.models import MemoryRecord
+from membot.session.manager import Session
 
 
 class MemoryStore(Protocol):

@@ -21,13 +21,13 @@ try:
     from nio.exceptions import EncryptionError
 except ImportError as e:
     raise ImportError(
-        "Matrix dependencies not installed. Run: pip install nanobot-ai[matrix]"
+        "Matrix dependencies not installed. Run: pip install membot-ai[matrix]"
     ) from e
 
-from nanobot.bus.events import OutboundMessage
-from nanobot.channels.base import BaseChannel
-from nanobot.config.loader import get_data_dir
-from nanobot.utils.helpers import safe_filename
+from membot.bus.events import OutboundMessage
+from membot.channels.base import BaseChannel
+from membot.config.loader import get_data_dir
+from membot.utils.helpers import safe_filename
 
 TYPING_NOTICE_TIMEOUT_MS = 30_000
 # Must stay below TYPING_NOTICE_TIMEOUT_MS so the indicator doesn't expire mid-processing.

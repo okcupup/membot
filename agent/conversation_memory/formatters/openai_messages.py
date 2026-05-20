@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Sequence
 
-from nanobot.agent.conversation_memory.models import RetrievedMemory
-from nanobot.agent.conversation_memory.schemas.raw_message import RAW_MESSAGE_KIND
+from membot.agent.conversation_memory.models import RetrievedMemory
+from membot.agent.conversation_memory.schemas.raw_message import RAW_MESSAGE_KIND
 
 
 class OpenAIMessageFormatter:

@@ -12,25 +12,25 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from loguru import logger
 
-from nanobot.agent.conversation_memory.engine import ConversationMemoryEngine
-from nanobot.agent.context import ContextBuilder
-from nanobot.agent.memory import MemoryStore
-from nanobot.agent.subagent import SubagentManager
-from nanobot.agent.tools.cron import CronTool
-from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
-from nanobot.agent.tools.message import MessageTool
-from nanobot.agent.tools.registry import ToolRegistry
-from nanobot.agent.tools.shell import ExecTool
-from nanobot.agent.tools.spawn import SpawnTool
-from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
-from nanobot.bus.events import InboundMessage, OutboundMessage
-from nanobot.bus.queue import MessageBus
-from nanobot.providers.base import LLMProvider
-from nanobot.session.manager import Session, SessionManager
+from membot.agent.conversation_memory.engine import ConversationMemoryEngine
+from membot.agent.context import ContextBuilder
+from membot.agent.memory import MemoryStore
+from membot.agent.subagent import SubagentManager
+from membot.agent.tools.cron import CronTool
+from membot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
+from membot.agent.tools.message import MessageTool
+from membot.agent.tools.registry import ToolRegistry
+from membot.agent.tools.shell import ExecTool
+from membot.agent.tools.spawn import SpawnTool
+from membot.agent.tools.web import WebFetchTool, WebSearchTool
+from membot.bus.events import InboundMessage, OutboundMessage
+from membot.bus.queue import MessageBus
+from membot.providers.base import LLMProvider
+from membot.session.manager import Session, SessionManager
 
 if TYPE_CHECKING:
-    from nanobot.config.schema import ChannelsConfig, ExecToolConfig
-    from nanobot.cron.service import CronService
+    from membot.config.schema import ChannelsConfig, ExecToolConfig
+    from membot.cron.service import CronService
 
 
 class AgentLoop:
@@ -66,7 +66,7 @@ class AgentLoop:
         mcp_servers: dict | None = None,
         channels_config: ChannelsConfig | None = None,
     ):
-        from nanobot.config.schema import ExecToolConfig
+        from membot.config.schema import ExecToolConfig
         self.bus = bus
         self.channels_config = channels_config
         self.provider = provider
@@ -137,7 +137,7 @@ class AgentLoop:
         if self._mcp_connected or self._mcp_connecting or not self._mcp_servers:
             return
         self._mcp_connecting = True
-        from nanobot.agent.tools.mcp import connect_mcp_servers
+        from membot.agent.tools.mcp import connect_mcp_servers
         try:
             self._mcp_stack = AsyncExitStack()
             await self._mcp_stack.__aenter__()
@@ -390,7 +390,7 @@ class AgentLoop:
                                   content="New session started.")
         if cmd == "/help":
             return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
-                                  content="🐈 nanobot commands:\n/new — Start a new conversation\n/stop — Stop the current task\n/help — Show available commands")
+                                  content="🐈 membot commands:\n/new — Start a new conversation\n/stop — Stop the current task\n/help — Show available commands")
 
         unconsolidated = len(session.messages) - session.last_consolidated
         if (unconsolidated >= self.memory_window and session.key not in self._consolidating):

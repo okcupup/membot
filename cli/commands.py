@@ -1,4 +1,4 @@
-"""CLI commands for nanobot."""
+"""CLI commands for membot."""
 
 import asyncio
 import os
@@ -18,13 +18,13 @@ from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.patch_stdout import patch_stdout
 
-from nanobot import __version__, __logo__
-from nanobot.config.schema import Config
-from nanobot.utils.helpers import sync_workspace_templates
+from membot import __version__, __logo__
+from membot.config.schema import Config
+from membot.utils.helpers import sync_workspace_templates
 
 app = typer.Typer(
-    name="nanobot",
-    help=f"{__logo__} nanobot - Personal AI Assistant",
+    name="membot",
+    help=f"{__logo__} membot - Personal AI Assistant",
     no_args_is_help=True,
 )
 
@@ -88,7 +88,7 @@ def _init_prompt_session() -> None:
     except Exception:
         pass
 
-    history_file = Path.home() / ".nanobot" / "history" / "cli_history"
+    history_file = Path.home() / ".membot" / "history" / "cli_history"
     history_file.parent.mkdir(parents=True, exist_ok=True)
 
     _PROMPT_SESSION = PromptSession(
@@ -103,7 +103,7 @@ def _print_agent_response(response: str, render_markdown: bool) -> None:
     content = response or ""
     body = Markdown(content) if render_markdown else Text(content)
     console.print()
-    console.print(f"[cyan]{__logo__} nanobot[/cyan]")
+    console.print(f"[cyan]{__logo__} membot[/cyan]")
     console.print(body)
     console.print()
 
@@ -135,7 +135,7 @@ async def _read_interactive_input_async() -> str:
 
 def version_callback(value: bool):
     if value:
-        console.print(f"{__logo__} nanobot v{__version__}")
+        console.print(f"{__logo__} membot v{__version__}")
         raise typer.Exit()
 
 
@@ -145,7 +145,7 @@ def main(
         None, "--version", "-v", callback=version_callback, is_eager=True
     ),
 ):
-    """nanobot - Personal AI Assistant."""
+    """membot - Personal AI Assistant."""
     pass
 
 
@@ -156,10 +156,10 @@ def main(
 
 @app.command()
 def onboard():
-    """Initialize nanobot configuration and workspace."""
-    from nanobot.config.loader import get_config_path, load_config, save_config
-    from nanobot.config.schema import Config
-    from nanobot.utils.helpers import get_workspace_path
+    """Initialize membot configuration and workspace."""
+    from membot.config.loader import get_config_path, load_config, save_config
+    from membot.config.schema import Config
+    from membot.utils.helpers import get_workspace_path
     
     config_path = get_config_path()
     
@@ -188,12 +188,12 @@ def onboard():
     
     sync_workspace_templates(workspace)
     
-    console.print(f"\n{__logo__} nanobot is ready!")
+    console.print(f"\n{__logo__} membot is ready!")
     console.print("\nNext steps:")
-    console.print("  1. Add your API key to [cyan]~/.nanobot/config.json[/cyan]")
+    console.print("  1. Add your API key to [cyan]~/.membot/config.json[/cyan]")
     console.print("     Get one at: https://openrouter.ai/keys")
-    console.print("  2. Chat: [cyan]nanobot agent -m \"Hello!\"[/cyan]")
-    console.print("\n[dim]Want Telegram/WhatsApp? See: https://github.com/HKUDS/nanobot#-chat-apps[/dim]")
+    console.print("  2. Chat: [cyan]membot agent -m \"Hello!\"[/cyan]")
+    console.print("\n[dim]Want Telegram/WhatsApp? See: https://github.com/HKUDS/membot#-chat-apps[/dim]")
 
 
 
@@ -201,9 +201,9 @@ def onboard():
 
 def _make_provider(config: Config):
     """Create the appropriate LLM provider from config."""
-    from nanobot.providers.litellm_provider import LiteLLMProvider
-    from nanobot.providers.openai_codex_provider import OpenAICodexProvider
-    from nanobot.providers.custom_provider import CustomProvider
+    from membot.providers.litellm_provider import LiteLLMProvider
+    from membot.providers.openai_codex_provider import OpenAICodexProvider
+    from membot.providers.custom_provider import CustomProvider
 
     model = config.agents.defaults.model
     provider_name = config.get_provider_name(model)
@@ -221,11 +221,11 @@ def _make_provider(config: Config):
             default_model=model,
         )
 
-    from nanobot.providers.registry import find_by_name
+    from membot.providers.registry import find_by_name
     spec = find_by_name(provider_name)
     if not model.startswith("bedrock/") and not (p and p.api_key) and not (spec and spec.is_oauth):
         console.print("[red]Error: No API key configured.[/red]")
-        console.print("Set one in ~/.nanobot/config.json under providers section")
+        console.print("Set one in ~/.membot/config.json under providers section")
         raise typer.Exit(1)
 
     return LiteLLMProvider(
@@ -247,21 +247,21 @@ def gateway(
     port: int = typer.Option(18790, "--port", "-p", help="Gateway port"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
 ):
-    """Start the nanobot gateway."""
-    from nanobot.config.loader import load_config, get_data_dir
-    from nanobot.bus.queue import MessageBus
-    from nanobot.agent.loop import AgentLoop
-    from nanobot.channels.manager import ChannelManager
-    from nanobot.session.manager import SessionManager
-    from nanobot.cron.service import CronService
-    from nanobot.cron.types import CronJob
-    from nanobot.heartbeat.service import HeartbeatService
+    """Start the membot gateway."""
+    from membot.config.loader import load_config, get_data_dir
+    from membot.bus.queue import MessageBus
+    from membot.agent.loop import AgentLoop
+    from membot.channels.manager import ChannelManager
+    from membot.session.manager import SessionManager
+    from membot.cron.service import CronService
+    from membot.cron.types import CronJob
+    from membot.heartbeat.service import HeartbeatService
     
     if verbose:
         import logging
         logging.basicConfig(level=logging.DEBUG)
     
-    console.print(f"{__logo__} Starting nanobot gateway on port {port}...")
+    console.print(f"{__logo__} Starting membot gateway on port {port}...")
     
     config = load_config()
     sync_workspace_templates(config.workspace_path)
@@ -303,7 +303,7 @@ def gateway(
             chat_id=job.payload.to or "direct",
         )
         if job.payload.deliver and job.payload.to:
-            from nanobot.bus.events import OutboundMessage
+            from membot.bus.events import OutboundMessage
             await bus.publish_outbound(OutboundMessage(
                 channel=job.payload.channel or "cli",
                 chat_id=job.payload.to,
@@ -349,7 +349,7 @@ def gateway(
 
     async def on_heartbeat_notify(response: str) -> None:
         """Deliver a heartbeat response to the user's channel."""
-        from nanobot.bus.events import OutboundMessage
+        from membot.bus.events import OutboundMessage
         channel, chat_id = _pick_heartbeat_target()
         if channel == "cli":
             return  # No external channel available to deliver to
@@ -409,13 +409,13 @@ def agent(
     message: str = typer.Option(None, "--message", "-m", help="Message to send to the agent"),
     session_id: str = typer.Option("cli:direct", "--session", "-s", help="Session ID"),
     markdown: bool = typer.Option(True, "--markdown/--no-markdown", help="Render assistant output as Markdown"),
-    logs: bool = typer.Option(False, "--logs/--no-logs", help="Show nanobot runtime logs during chat"),
+    logs: bool = typer.Option(False, "--logs/--no-logs", help="Show membot runtime logs during chat"),
 ):
     """Interact with the agent directly."""
-    from nanobot.config.loader import load_config, get_data_dir
-    from nanobot.bus.queue import MessageBus
-    from nanobot.agent.loop import AgentLoop
-    from nanobot.cron.service import CronService
+    from membot.config.loader import load_config, get_data_dir
+    from membot.bus.queue import MessageBus
+    from membot.agent.loop import AgentLoop
+    from membot.cron.service import CronService
     from loguru import logger
     
     config = load_config()
@@ -429,9 +429,9 @@ def agent(
     cron = CronService(cron_store_path)
 
     if logs:
-        logger.enable("nanobot")
+        logger.enable("membot")
     else:
-        logger.disable("nanobot")
+        logger.disable("membot")
     
     agent_loop = AgentLoop(
         bus=bus,
@@ -457,7 +457,7 @@ def agent(
             from contextlib import nullcontext
             return nullcontext()
         # Animated spinner is safe to use with prompt_toolkit input handling
-        return console.status("[dim]nanobot is thinking...[/dim]", spinner="dots")
+        return console.status("[dim]membot is thinking...[/dim]", spinner="dots")
 
     async def _cli_progress(content: str, *, tool_hint: bool = False) -> None:
         ch = agent_loop.channels_config
@@ -478,7 +478,7 @@ def agent(
         asyncio.run(run_once())
     else:
         # Interactive mode — route through bus like other channels
-        from nanobot.bus.events import InboundMessage
+        from membot.bus.events import InboundMessage
         _init_prompt_session()
         console.print(f"{__logo__} Interactive mode (type [bold]exit[/bold] or [bold]Ctrl+C[/bold] to quit)\n")
 
@@ -585,7 +585,7 @@ app.add_typer(channels_app, name="channels")
 @channels_app.command("status")
 def channels_status():
     """Show channel status."""
-    from nanobot.config.loader import load_config
+    from membot.config.loader import load_config
 
     config = load_config()
 
@@ -681,7 +681,7 @@ def _get_bridge_dir() -> Path:
     import subprocess
     
     # User's bridge location
-    user_bridge = Path.home() / ".nanobot" / "bridge"
+    user_bridge = Path.home() / ".membot" / "bridge"
     
     # Check if already built
     if (user_bridge / "dist" / "index.js").exists():
@@ -693,7 +693,7 @@ def _get_bridge_dir() -> Path:
         raise typer.Exit(1)
     
     # Find source bridge: first check package data, then source dir
-    pkg_bridge = Path(__file__).parent.parent / "bridge"  # nanobot/bridge (installed)
+    pkg_bridge = Path(__file__).parent.parent / "bridge"  # membot/bridge (installed)
     src_bridge = Path(__file__).parent.parent.parent / "bridge"  # repo root/bridge (dev)
     
     source = None
@@ -704,7 +704,7 @@ def _get_bridge_dir() -> Path:
     
     if not source:
         console.print("[red]Bridge source not found.[/red]")
-        console.print("Try reinstalling: pip install --force-reinstall nanobot")
+        console.print("Try reinstalling: pip install --force-reinstall membot")
         raise typer.Exit(1)
     
     console.print(f"{__logo__} Setting up bridge...")
@@ -737,7 +737,7 @@ def _get_bridge_dir() -> Path:
 def channels_login():
     """Link device via QR code."""
     import subprocess
-    from nanobot.config.loader import load_config
+    from membot.config.loader import load_config
     
     config = load_config()
     bridge_dir = _get_bridge_dir()
@@ -770,8 +770,8 @@ def cron_list(
     all: bool = typer.Option(False, "--all", "-a", help="Include disabled jobs"),
 ):
     """List scheduled jobs."""
-    from nanobot.config.loader import get_data_dir
-    from nanobot.cron.service import CronService
+    from membot.config.loader import get_data_dir
+    from membot.cron.service import CronService
     
     store_path = get_data_dir() / "cron" / "jobs.json"
     service = CronService(store_path)
@@ -831,9 +831,9 @@ def cron_add(
     channel: str = typer.Option(None, "--channel", help="Channel for delivery (e.g. 'telegram', 'whatsapp')"),
 ):
     """Add a scheduled job."""
-    from nanobot.config.loader import get_data_dir
-    from nanobot.cron.service import CronService
-    from nanobot.cron.types import CronSchedule
+    from membot.config.loader import get_data_dir
+    from membot.cron.service import CronService
+    from membot.cron.types import CronSchedule
     
     if tz and not cron_expr:
         console.print("[red]Error: --tz can only be used with --cron[/red]")
@@ -876,8 +876,8 @@ def cron_remove(
     job_id: str = typer.Argument(..., help="Job ID to remove"),
 ):
     """Remove a scheduled job."""
-    from nanobot.config.loader import get_data_dir
-    from nanobot.cron.service import CronService
+    from membot.config.loader import get_data_dir
+    from membot.cron.service import CronService
     
     store_path = get_data_dir() / "cron" / "jobs.json"
     service = CronService(store_path)
@@ -894,8 +894,8 @@ def cron_enable(
     disable: bool = typer.Option(False, "--disable", help="Disable instead of enable"),
 ):
     """Enable or disable a job."""
-    from nanobot.config.loader import get_data_dir
-    from nanobot.cron.service import CronService
+    from membot.config.loader import get_data_dir
+    from membot.cron.service import CronService
     
     store_path = get_data_dir() / "cron" / "jobs.json"
     service = CronService(store_path)
@@ -915,12 +915,12 @@ def cron_run(
 ):
     """Manually run a job."""
     from loguru import logger
-    from nanobot.config.loader import load_config, get_data_dir
-    from nanobot.cron.service import CronService
-    from nanobot.cron.types import CronJob
-    from nanobot.bus.queue import MessageBus
-    from nanobot.agent.loop import AgentLoop
-    logger.disable("nanobot")
+    from membot.config.loader import load_config, get_data_dir
+    from membot.cron.service import CronService
+    from membot.cron.types import CronJob
+    from membot.bus.queue import MessageBus
+    from membot.agent.loop import AgentLoop
+    logger.disable("membot")
 
     config = load_config()
     provider = _make_provider(config)
@@ -977,20 +977,20 @@ def cron_run(
 
 @app.command()
 def status():
-    """Show nanobot status."""
-    from nanobot.config.loader import load_config, get_config_path
+    """Show membot status."""
+    from membot.config.loader import load_config, get_config_path
 
     config_path = get_config_path()
     config = load_config()
     workspace = config.workspace_path
 
-    console.print(f"{__logo__} nanobot Status\n")
+    console.print(f"{__logo__} membot Status\n")
 
     console.print(f"Config: {config_path} {'[green]✓[/green]' if config_path.exists() else '[red]✗[/red]'}")
     console.print(f"Workspace: {workspace} {'[green]✓[/green]' if workspace.exists() else '[red]✗[/red]'}")
 
     if config_path.exists():
-        from nanobot.providers.registry import PROVIDERS
+        from membot.providers.registry import PROVIDERS
 
         console.print(f"Model: {config.agents.defaults.model}")
         
@@ -1035,7 +1035,7 @@ def provider_login(
     provider: str = typer.Argument(..., help="OAuth provider (e.g. 'openai-codex', 'github-copilot')"),
 ):
     """Authenticate with an OAuth provider."""
-    from nanobot.providers.registry import PROVIDERS
+    from membot.providers.registry import PROVIDERS
 
     key = provider.replace("-", "_")
     spec = next((s for s in PROVIDERS if s.name == key and s.is_oauth), None)

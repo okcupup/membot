@@ -5,11 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from nanobot.agent.conversation_memory.extractors.raw_message import build_raw_message_record
-from nanobot.agent.conversation_memory.models import MemoryQuery, MemorySource, RetrievedMemory
-from nanobot.agent.conversation_memory.retrievers.base import MemoryRetriever
-from nanobot.agent.conversation_memory.schemas.raw_message import RAW_MESSAGE_KIND
-from nanobot.session.manager import SessionManager
+from membot.agent.conversation_memory.extractors.raw_message import build_raw_message_record
+from membot.agent.conversation_memory.models import MemoryQuery, MemorySource, RetrievedMemory
+from membot.agent.conversation_memory.retrievers.base import MemoryRetriever
+from membot.agent.conversation_memory.schemas.raw_message import RAW_MESSAGE_KIND
+from membot.session.manager import SessionManager
 
 
 class RecentMessageRetriever(MemoryRetriever):
