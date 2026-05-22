@@ -11,6 +11,7 @@ from membot.agent.conversation_memory.extractors.raw_message import (
     RawMessageExtractor,
     build_raw_message_record,
 )
+from membot.agent.conversation_memory.extractors.summarization import SummarizationExtractor
 from membot.agent.conversation_memory.managers.base import MemoryManager, MemoryPolicy
 from membot.agent.conversation_memory.models import (
     MemoryQuery,
@@ -37,5 +38,6 @@ __all__ = [
     "RAW_MESSAGE_KIND",
     "RawMessageExtractor",
     "RetrievedMemory",
+    "SummarizationExtractor",
     "build_raw_message_record",
 ]

@@ -7,6 +7,7 @@ from typing import Any, Sequence
 
 from membot.agent.conversation_memory.extractors.base import MemoryExtractor
 from membot.agent.conversation_memory.extractors.raw_message import RawMessageExtractor
+from membot.agent.conversation_memory.extractors.summarization import SummarizationExtractor
 from membot.agent.conversation_memory.formatters.openai_messages import OpenAIMessageFormatter
 from membot.agent.conversation_memory.managers.base import MemoryManager
 from membot.agent.conversation_memory.managers.simple import SimpleMessageManager

@@ -7,7 +7,11 @@ from dataclasses import dataclass, field
 from membot.agent.conversation_memory.schemas.fact import FACT_KIND
 from membot.agent.conversation_memory.schemas.preference import PREFERENCE_KIND
 from membot.agent.conversation_memory.schemas.raw_message import RAW_MESSAGE_KIND
-from membot.agent.conversation_memory.schemas.summary import SUMMARY_KIND
+from membot.agent.conversation_memory.schemas.summary import (
+    OPTIONAL_FIELDS as SUMMARY_OPTIONAL_FIELDS,
+    REQUIRED_FIELDS as SUMMARY_REQUIRED_FIELDS,
+    SUMMARY_KIND,
+)
 from membot.agent.conversation_memory.schemas.task import TASK_KIND
 
 
@@ -28,7 +32,8 @@ SCHEMAS: dict[str, MemorySchema] = {
     ),
     SUMMARY_KIND: MemorySchema(
         kind=SUMMARY_KIND,
-        required_fields=("summary", "covered_message_ids", "time_range"),
+        required_fields=SUMMARY_REQUIRED_FIELDS,
+        optional_fields=SUMMARY_OPTIONAL_FIELDS,
     ),
     FACT_KIND: MemorySchema(
         kind=FACT_KIND,
