@@ -7,6 +7,7 @@ Redis storage, and vector retrieval.
 
 from membot.agent.conversation_memory.engine import ConversationMemoryEngine
 from membot.agent.conversation_memory.extractors.base import MemoryExtractor
+from membot.agent.conversation_memory.extractors.graph import GraphExtractionExtractor
 from membot.agent.conversation_memory.extractors.raw_message import (
     RawMessageExtractor,
     build_raw_message_record,

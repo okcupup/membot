@@ -12,6 +12,11 @@ from membot.agent.conversation_memory.schemas.summary import (
     REQUIRED_FIELDS as SUMMARY_REQUIRED_FIELDS,
     SUMMARY_KIND,
 )
+from membot.agent.conversation_memory.schemas.graph import (
+    GRAPH_KIND,
+    OPTIONAL_FIELDS as GRAPH_OPTIONAL_FIELDS,
+    REQUIRED_FIELDS as GRAPH_REQUIRED_FIELDS,
+)
 from membot.agent.conversation_memory.schemas.task import TASK_KIND
 
 
@@ -46,6 +51,11 @@ SCHEMAS: dict[str, MemorySchema] = {
     TASK_KIND: MemorySchema(
         kind=TASK_KIND,
         required_fields=("title", "status", "confidence"),
+    ),
+    GRAPH_KIND: MemorySchema(
+        kind=GRAPH_KIND,
+        required_fields=GRAPH_REQUIRED_FIELDS,
+        optional_fields=GRAPH_OPTIONAL_FIELDS,
     ),
 }
 
