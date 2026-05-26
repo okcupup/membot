@@ -19,12 +19,15 @@ class OpenAIMessageFormatter:
                 continue
 
             payload = record.payload
-            entry: dict[str, Any] = {
-                "role": payload["role"],
-                "content": payload.get("content", ""),
-            }
-            for field in ("tool_calls", "tool_call_id", "name"):
-                if field in payload:
-                    entry[field] = payload[field]
-            messages.append(entry)
+            for message in payload.get("messages", []):
+                if not isinstance(message, dict) or "role" not in message:
+                    continue
+                entry: dict[str, Any] = {
+                    "role": message["role"],
+                    "content": message.get("content", ""),
+                }
+                for field in ("tool_calls", "tool_call_id", "name"):
+                    if field in message:
+                        entry[field] = message[field]
+                messages.append(entry)
         return messages

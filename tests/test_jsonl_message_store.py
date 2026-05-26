@@ -57,7 +57,7 @@ class JsonlMessageStoreTest(unittest.TestCase):
             cleared = store.get_or_create_session(session_key)
             self.assertEqual(cleared.messages, [])
 
-    def test_save_records_preserves_current_jsonl_shape(self) -> None:
+    def test_save_records_ignores_non_turn_raw_payload(self) -> None:
         _TEST_TMP.mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(dir=_TEST_TMP) as tmp:
             store = JsonlMessageStore(Path(tmp))
@@ -85,16 +85,43 @@ class JsonlMessageStoreTest(unittest.TestCase):
             ))
 
             path = Path(tmp) / "sessions" / "cli_records.jsonl"
-            lines = path.read_text(encoding="utf-8").splitlines()
-            metadata = json.loads(lines[0])
-            message = json.loads(lines[1])
+            self.assertFalse(path.exists())
 
-            self.assertEqual(metadata["_type"], "metadata")
-            self.assertEqual(metadata["key"], session_key)
-            self.assertEqual(message["role"], "assistant")
-            self.assertEqual(message["tool_calls"], [{"id": "call_1"}])
-            self.assertEqual(len(lines), 2)
+    def test_save_records_expands_turn_payload(self) -> None:
+        _TEST_TMP.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=_TEST_TMP) as tmp:
+            store = JsonlMessageStore(Path(tmp))
+            session_key = "cli:turn-record"
+            turn_id = "turn:cli_turn-record:000001"
+
+            asyncio.run(store.save_records(
+                session_key,
+                [
+                    MemoryRecord(
+                        kind=RAW_MESSAGE_KIND,
+                        session_key=session_key,
+                        source_kind="session_turn",
+                        source_id=turn_id,
+                        payload={
+                            "turn_id": turn_id,
+                            "messages": [
+                                {"role": "user", "content": "hello", "timestamp": "2026-05-26T10:00:00"},
+                                {"role": "assistant", "content": "hi", "timestamp": "2026-05-26T10:00:01"},
+                            ],
+                        },
+                    ),
+                ],
+            ))
+
+            session = store.get_or_create_session(session_key)
+            self.assertEqual(len(session.messages), 2)
+            self.assertEqual(session.messages[0]["turn_id"], turn_id)
+            self.assertEqual(store.get_recent(session_key, 2), [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "hi"},
+            ])
 
 
 if __name__ == "__main__":
     unittest.main()
+

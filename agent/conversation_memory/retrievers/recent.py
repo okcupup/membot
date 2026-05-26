@@ -5,11 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from membot.agent.conversation_memory.extractors.raw_message import build_raw_message_record
 from membot.agent.conversation_memory.models import MemoryQuery, MemorySource, RetrievedMemory
 from membot.agent.conversation_memory.retrievers.base import MemoryRetriever
 from membot.agent.conversation_memory.schemas.raw_message import RAW_MESSAGE_KIND
 from membot.session.manager import SessionManager
+from membot.agent.conversation_memory.ids import build_record_id
 
 
 class RecentMessageRetriever(MemoryRetriever):
@@ -32,12 +32,18 @@ class RecentMessageRetriever(MemoryRetriever):
                 break
 
         results: list[RetrievedMemory] = []
-        for message in sliced:
-            source = MemorySource(
+        for index, message in enumerate(sliced):
+            payload = {
+                "turn_id": message.get("turn_id") if isinstance(message.get("turn_id"), str) else f"recent:{index:06d}",
+                "messages": [dict(message)],
+                "timestamp": message.get("timestamp"),
+            }
+            results.append(RetrievedMemory(record=MemoryRecord(
                 kind=RAW_MESSAGE_KIND,
-                payload=dict(message),
+                payload=payload,
                 session_key=query.session_key,
-                source_id=query.session_key,
-            )
-            results.append(RetrievedMemory(record=build_raw_message_record(message, source=source)))
+                record_id=build_record_id(RAW_MESSAGE_KIND, payload["turn_id"], payload=payload),
+                source_kind="session_turn",
+                source_id=payload["turn_id"],
+            )))
         return results

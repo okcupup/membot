@@ -12,6 +12,7 @@ from loguru import logger
 from membot.agent.conversation_memory.extractors.base import MemoryExtractor
 from membot.agent.conversation_memory.models import MemoryRecord, MemorySource
 from membot.agent.conversation_memory.schemas.graph import GRAPH_KIND
+from membot.agent.conversation_memory.ids import build_record_id
 
 if TYPE_CHECKING:
     from membot.providers.base import LLMProvider
@@ -146,6 +147,7 @@ class GraphExtractionExtractor(MemoryExtractor):
                 payload=payload,
                 scope=source.scope,
                 session_key=source.session_key,
+                record_id=build_record_id(GRAPH_KIND, source.source_id or GRAPH_KIND, self.extractor_version, payload),
                 source_kind=source.kind,
                 source_id=source.source_id,
                 metadata=dict(source.metadata),
@@ -209,9 +211,23 @@ def _build_graph_payload(
         "triples": triples,
         "time_range": _get_time_range(messages, source),
         "covered_message_ids": _get_message_ids(messages),
+        "turn_ids": _get_turn_ids(source),
         "extractor_version": extractor_version,
     }
 
+
+def _get_turn_ids(source: MemorySource) -> list[str]:
+    turn_ids = source.payload.get("turn_ids") if isinstance(source.payload, Mapping) else None
+    if not isinstance(turn_ids, list):
+        return []
+
+    result: list[str] = []
+    for item in turn_ids:
+        if isinstance(item, (str, int)):
+            item = str(item).strip()
+            if item and item not in result:
+                result.append(item)
+    return result
 
 def _build_system_prompt() -> str:
     return (

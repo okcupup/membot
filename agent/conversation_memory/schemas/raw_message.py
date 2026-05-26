@@ -6,9 +6,10 @@ from typing import Any
 
 
 RAW_MESSAGE_KIND = "raw_message"
-REQUIRED_FIELDS = ("role", "content", "timestamp")
-OPTIONAL_FIELDS = ("tool_calls", "tool_call_id", "name")
+REQUIRED_FIELDS = ("turn_id", "messages", "timestamp")
+OPTIONAL_FIELDS = ("time_range",)
 
 
 def is_raw_message_payload(payload: dict[str, Any]) -> bool:
-    return all(field in payload for field in REQUIRED_FIELDS)
+    return all(field in payload for field in REQUIRED_FIELDS) and isinstance(payload.get("messages"), list)
+

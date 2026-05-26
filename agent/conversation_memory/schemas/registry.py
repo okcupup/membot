@@ -32,8 +32,8 @@ class MemorySchema:
 SCHEMAS: dict[str, MemorySchema] = {
     RAW_MESSAGE_KIND: MemorySchema(
         kind=RAW_MESSAGE_KIND,
-        required_fields=("role", "content", "timestamp"),
-        optional_fields=("tool_calls", "tool_call_id", "name"),
+        required_fields=("turn_id", "messages", "timestamp"),
+        optional_fields=("time_range",),
     ),
     SUMMARY_KIND: MemorySchema(
         kind=SUMMARY_KIND,

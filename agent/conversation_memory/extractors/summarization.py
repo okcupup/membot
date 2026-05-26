@@ -12,6 +12,7 @@ from loguru import logger
 from membot.agent.conversation_memory.extractors.base import MemoryExtractor
 from membot.agent.conversation_memory.models import MemoryRecord, MemorySource
 from membot.agent.conversation_memory.schemas.summary import SUMMARY_KIND
+from membot.agent.conversation_memory.ids import build_record_id
 
 # if TYPE_CHECKING:
 from membot.providers.base import LLMProvider
@@ -87,7 +88,7 @@ class SummarizationExtractor(MemoryExtractor):
         extractor_version: str = "summarization-v1",
     ):
         self.provider = provider
-        self.model = model or provider.get_default_model()
+        self.model = model
         self.max_tokens = max_tokens
         self.temperature = temperature
         self.extractor_version = extractor_version
@@ -126,6 +127,7 @@ class SummarizationExtractor(MemoryExtractor):
                 payload=payload,
                 scope=source.scope,
                 session_key=source.session_key,
+                record_id=build_record_id(SUMMARY_KIND, source.source_id or SUMMARY_KIND, self.extractor_version, payload),
                 source_kind=source.kind,
                 source_id=source.source_id,
                 metadata=dict(source.metadata),
@@ -184,6 +186,7 @@ def _build_summary_payload(
 
     payload: dict[str, Any] = {
         "summary": summary.strip(),
+        "turn_ids": _get_turn_ids(source),
         "covered_message_ids": _get_message_ids(messages),
         "time_range": _get_time_range(messages, source),
         "keywords": _get_string_list(arguments.get("keywords")),
@@ -196,6 +199,20 @@ def _build_summary_payload(
     if confidence is not None:
         payload["confidence"] = confidence
     return payload
+
+
+def _get_turn_ids(source: MemorySource) -> list[str]:
+    turn_ids = source.payload.get("turn_ids") if isinstance(source.payload, Mapping) else None
+    if not isinstance(turn_ids, list):
+        return []
+
+    result: list[str] = []
+    for item in turn_ids:
+        if isinstance(item, (str, int)):
+            item = str(item).strip()
+            if item and item not in result:
+                result.append(item)
+    return result
 
 
 def _build_system_prompt() -> str:

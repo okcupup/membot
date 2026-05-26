@@ -61,7 +61,7 @@ class JsonlMessageStore(MemoryStore):
         for record in records:
             if record.kind != RAW_MESSAGE_KIND:
                 continue
-            messages.append(_normalize_session_message(record.payload))
+            messages.extend(_raw_record_to_session_messages(record))
         if not messages:
             return
         self.append_messages(session_key, messages)
@@ -77,3 +77,21 @@ def _normalize_session_message(message: dict[str, Any]) -> dict[str, Any]:
     message = dict(message)
     message.setdefault("timestamp", datetime.now().isoformat())
     return message
+
+
+def _raw_record_to_session_messages(record: MemoryRecord) -> list[dict[str, Any]]:
+    payload = record.payload
+    messages = payload.get("messages")
+    turn_id = payload.get("turn_id")
+    if isinstance(messages, list):
+        out: list[dict[str, Any]] = []
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            entry = _normalize_session_message(message)
+            if isinstance(turn_id, str) and turn_id:
+                entry.setdefault("turn_id", turn_id)
+            out.append(entry)
+        return out
+
+    return []

@@ -21,6 +21,7 @@ from membot.agent.conversation_memory.sanitizer import (
 from membot.agent.conversation_memory.stores.base import MemoryStore
 from membot.agent.conversation_memory.stores.jsonl import JsonlMessageStore
 from membot.session.manager import SessionManager
+from membot.agent.conversation_memory.ids import build_turn_id, infer_next_turn_index
 
 
 class ConversationMemoryEngine:
@@ -74,16 +75,20 @@ class ConversationMemoryEngine:
             skip=skip,
             tool_result_max_chars=self.tool_result_max_chars,
         )
+        if not sanitized:
+            return
 
+        session = self.store.get_or_create_session(session_key)
+        turn_index = infer_next_turn_index(session.messages, session_key)
+        turn_id = build_turn_id(session_key, turn_index)
+        source = MemorySource(
+            kind="session_turn",
+            payload={"turn_id": turn_id, "messages": sanitized},
+            session_key=session_key,
+            source_id=turn_id,
+        )
         records: list[MemoryRecord] = []
-        for message in sanitized:
-            source = MemorySource(
-                kind="session_message",
-                payload=message,
-                session_key=session_key,
-                source_id=session_key,
-            )
-            records.extend(await self.extractor.extract(source))
+        records.extend(await self.extractor.extract(source))
 
         managed = self.manager.manage(records)
         await self.store.save_records(session_key, managed)
