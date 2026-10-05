@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
-from membot.agent.conversation_memory.models import MemoryQuery, MemorySource, RetrievedMemory
+from membot.agent.conversation_memory.ids import build_record_id
+from membot.agent.conversation_memory.models import MemoryQuery, MemoryRecord, RetrievedMemory
 from membot.agent.conversation_memory.retrievers.base import MemoryRetriever
 from membot.agent.conversation_memory.schemas.raw_message import RAW_MESSAGE_KIND
 from membot.session.manager import SessionManager
-from membot.agent.conversation_memory.ids import build_record_id
 
 
 class RecentMessageRetriever(MemoryRetriever):
