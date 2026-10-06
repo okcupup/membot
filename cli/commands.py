@@ -265,7 +265,10 @@ def gateway(
     
     config = load_config()
     sync_workspace_templates(config.workspace_path)
-    bus = MessageBus()
+    bus = MessageBus(
+        inbound_maxsize=config.agents.runtime.inbound_queue_size,
+        outbound_maxsize=config.agents.runtime.outbound_queue_size,
+    )
     provider = _make_provider(config)
     session_manager = SessionManager(config.workspace_path)
     
@@ -291,6 +294,15 @@ def gateway(
         session_manager=session_manager,
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
+        max_concurrent_invocations=config.agents.runtime.max_concurrent_invocations,
+        max_pending_invocations=config.agents.runtime.max_pending_invocations,
+        queue_timeout=config.agents.runtime.queue_timeout_seconds,
+        execution_timeout=config.agents.runtime.execution_timeout_seconds,
+        max_subagent_tasks=config.agents.runtime.max_subagent_tasks,
+        max_concurrent_subagents=config.agents.runtime.max_concurrent_subagents,
+        enable_consolidation=config.agents.runtime.enable_consolidation,
+        enable_subagents=config.agents.runtime.enable_subagents,
+        enable_cron=config.agents.runtime.enable_cron,
     )
     
     # Set cron callback (needs agent)
@@ -375,11 +387,15 @@ def gateway(
     if cron_status["jobs"] > 0:
         console.print(f"[green]✓[/green] Cron: {cron_status['jobs']} scheduled jobs")
     
-    console.print(f"[green]✓[/green] Heartbeat: every {hb_cfg.interval_s}s")
+    console.print(
+        f"[green]✓[/green] Heartbeat: every {hb_cfg.interval_s}s"
+        if hb_cfg.enabled else "[dim]Heartbeat disabled[/dim]"
+    )
     
     async def run():
         try:
-            await cron.start()
+            if config.agents.runtime.enable_cron:
+                await cron.start()
             await heartbeat.start()
             await asyncio.gather(
                 agent.run(),
@@ -388,7 +404,7 @@ def gateway(
         except KeyboardInterrupt:
             console.print("\nShutting down...")
         finally:
-            await agent.close_mcp()
+            await agent.shutdown()
             heartbeat.stop()
             cron.stop()
             agent.stop()
@@ -421,7 +437,10 @@ def agent(
     config = load_config()
     sync_workspace_templates(config.workspace_path)
     
-    bus = MessageBus()
+    bus = MessageBus(
+        inbound_maxsize=config.agents.runtime.inbound_queue_size,
+        outbound_maxsize=config.agents.runtime.outbound_queue_size,
+    )
     provider = _make_provider(config)
 
     # Create cron service for tool usage (no callback needed for CLI unless running)
@@ -449,6 +468,15 @@ def agent(
         restrict_to_workspace=config.tools.restrict_to_workspace,
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
+        max_concurrent_invocations=config.agents.runtime.max_concurrent_invocations,
+        max_pending_invocations=config.agents.runtime.max_pending_invocations,
+        queue_timeout=config.agents.runtime.queue_timeout_seconds,
+        execution_timeout=config.agents.runtime.execution_timeout_seconds,
+        max_subagent_tasks=config.agents.runtime.max_subagent_tasks,
+        max_concurrent_subagents=config.agents.runtime.max_concurrent_subagents,
+        enable_consolidation=config.agents.runtime.enable_consolidation,
+        enable_subagents=config.agents.runtime.enable_subagents,
+        enable_cron=config.agents.runtime.enable_cron,
     )
     
     # Show spinner when logs are off (no output to miss); skip when logs are on
@@ -568,7 +596,7 @@ def agent(
                 agent_loop.stop()
                 outbound_task.cancel()
                 await asyncio.gather(bus_task, outbound_task, return_exceptions=True)
-                await agent_loop.close_mcp()
+                await agent_loop.shutdown()
 
         asyncio.run(run_interactive())
 
@@ -924,7 +952,10 @@ def cron_run(
 
     config = load_config()
     provider = _make_provider(config)
-    bus = MessageBus()
+    bus = MessageBus(
+        inbound_maxsize=config.agents.runtime.inbound_queue_size,
+        outbound_maxsize=config.agents.runtime.outbound_queue_size,
+    )
     agent_loop = AgentLoop(
         bus=bus,
         provider=provider,
@@ -940,6 +971,15 @@ def cron_run(
         restrict_to_workspace=config.tools.restrict_to_workspace,
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
+        max_concurrent_invocations=config.agents.runtime.max_concurrent_invocations,
+        max_pending_invocations=config.agents.runtime.max_pending_invocations,
+        queue_timeout=config.agents.runtime.queue_timeout_seconds,
+        execution_timeout=config.agents.runtime.execution_timeout_seconds,
+        max_subagent_tasks=config.agents.runtime.max_subagent_tasks,
+        max_concurrent_subagents=config.agents.runtime.max_concurrent_subagents,
+        enable_consolidation=config.agents.runtime.enable_consolidation,
+        enable_subagents=config.agents.runtime.enable_subagents,
+        enable_cron=config.agents.runtime.enable_cron,
     )
 
     store_path = get_data_dir() / "cron" / "jobs.json"

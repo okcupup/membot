@@ -200,21 +200,6 @@ class QQConfig(Base):
     secret: str = ""  # 机器人密钥 (AppSecret) from q.qq.com
     allow_from: list[str] = Field(default_factory=list)  # Allowed user openids (empty = public access)
 
-class MatrixConfig(Base):
-    """Matrix (Element) channel configuration."""
-    enabled: bool = False
-    homeserver: str = "https://matrix.org"
-    access_token: str = ""
-    user_id: str = ""                       # e.g. @bot:matrix.org
-    device_id: str = ""
-    e2ee_enabled: bool = True               # end-to-end encryption support
-    sync_stop_grace_seconds: int = 2        # graceful sync_forever shutdown timeout
-    max_media_bytes: int = 20 * 1024 * 1024 # inbound + outbound attachment limit
-    allow_from: list[str] = Field(default_factory=list)
-    group_policy: Literal["open", "mention", "allowlist"] = "open"
-    group_allow_from: list[str] = Field(default_factory=list)
-    allow_room_mentions: bool = False
-
 class ChannelsConfig(Base):
     """Configuration for chat channels."""
 
@@ -245,10 +230,27 @@ class AgentDefaults(Base):
     reasoning_effort: str | None = None  # low / medium / high — enables LLM thinking mode
 
 
+class RuntimeConfig(Base):
+    """Bounds and deadlines for the in-process execution kernel."""
+
+    max_concurrent_invocations: int = Field(default=4, ge=1)  # Worker provider slots
+    max_pending_invocations: int = Field(default=256, ge=1)  # Accepted in-process work
+    inbound_queue_size: int = Field(default=256, ge=1)  # Native bus backpressure
+    outbound_queue_size: int = Field(default=256, ge=1)
+    queue_timeout_seconds: float | None = Field(default=None, gt=0)  # Acceptance to admission
+    execution_timeout_seconds: float | None = Field(default=None, gt=0)  # Admission to completion
+    max_subagent_tasks: int = Field(default=16, ge=1)  # Total background task cap
+    max_concurrent_subagents: int = Field(default=4, ge=1)
+    enable_consolidation: bool = True  # Inline at the Session queue head
+    enable_subagents: bool = True  # Disable before durable service lifecycle exists
+    enable_cron: bool = True  # Disable before durable service lifecycle exists
+
+
 class AgentsConfig(Base):
     """Agent configuration."""
 
     defaults: AgentDefaults = Field(default_factory=AgentDefaults)
+    runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
 
 
 class ProviderConfig(Base):

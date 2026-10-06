@@ -138,13 +138,33 @@ all dispatches. The direct case issued two concurrent calls for
 response. These are observations of the current implementation, not target
 performance numbers.
 
-## M0 risks carried forward
+## M1 follow-up observation
 
-1. Replace the global lock with a per-Session ordered executor plus a Worker
-   semaphore, while keeping direct CLI behavior explicit.
-2. Move service state, context, and events to PostgreSQL and add a transactional
+After the M0 checkpoint, the deterministic Fake Provider was run again through
+the same two entry points. The runtime kernel now gives each effective Session
+its own queue and drain task, while a Worker semaphore limits provider
+admission:
+
+```text
+native_message_bus: provider_max_active=2,
+  alpha-1, alpha-2 and beta-1, beta-2 preserve per-session order
+process_direct: provider_max_active=1,
+  two concurrent calls for baseline:direct remain serial
+```
+
+The output is saved by:
+
+```bash
+LITELLM_LOCAL_MODEL_COST_MAP=True ./.venv/bin/python scripts/m0_baseline.py \
+  --output /tmp/membot-m1-baseline.json
+```
+
+This is a deterministic behavior probe, not a throughput benchmark. The
+original M0 observations above remain the historical baseline for comparison.
+
+## Next-phase risks carried forward
+
+1. Move service state, context, and events to PostgreSQL and add a transactional
    Outbox before returning `202`.
-3. Isolate MessageTool routing and all mutable tool/session context per
-   invocation.
-4. Bound queue and Worker memory, and define queue versus execution deadlines.
-5. Fix wheel inclusion and repeat the clean import check before deployment work.
+2. Add Redis at-least-once transport, Worker leases, and recovery semantics.
+3. Fix wheel inclusion and repeat the clean import check before deployment work.

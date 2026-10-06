@@ -3,17 +3,25 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import re
-import weakref
+import time
+from collections import deque
 from contextlib import AsyncExitStack
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from loguru import logger
 
-from membot.agent.conversation_memory.engine import ConversationMemoryEngine
 from membot.agent.context import ContextBuilder
+from membot.agent.conversation_memory.engine import ConversationMemoryEngine
+from membot.agent.execution import (
+    ExecutionContext,
+    reset_execution_context,
+    set_execution_context,
+)
 from membot.agent.memory import MemoryStore
 from membot.agent.subagent import SubagentManager
 from membot.agent.tools.cron import CronTool
@@ -31,6 +39,40 @@ from membot.session.manager import Session, SessionManager
 if TYPE_CHECKING:
     from membot.config.schema import ChannelsConfig, ExecToolConfig
     from membot.cron.service import CronService
+
+
+class InvocationQueueFullError(RuntimeError):
+    """Raised when the bounded Worker scheduler cannot accept more work."""
+
+
+class InvocationQueueTimeoutError(TimeoutError):
+    """Raised when an invocation waits too long before Worker admission."""
+
+
+class InvocationExecutionTimeoutError(TimeoutError):
+    """Raised when an admitted invocation exceeds its execution budget."""
+
+
+@dataclass(slots=True)
+class _ScheduledInvocation:
+    """One accepted invocation waiting in, or executing from, a Session queue."""
+
+    message: InboundMessage
+    context: ExecutionContext
+    future: asyncio.Future[OutboundMessage | None]
+    accepted_at: float
+    on_progress: Callable[..., Awaitable[None]] | None = None
+    execution_task: asyncio.Task | None = None
+    cancelled: bool = False
+
+
+@dataclass(slots=True)
+class _SessionState:
+    """Mutable scheduler state owned by exactly one normalized Session key."""
+
+    queue: deque[_ScheduledInvocation] = field(default_factory=deque)
+    running: _ScheduledInvocation | None = None
+    drain_task: asyncio.Task | None = None
 
 
 class AgentLoop:
@@ -65,6 +107,17 @@ class AgentLoop:
         session_manager: SessionManager | None = None,
         mcp_servers: dict | None = None,
         channels_config: ChannelsConfig | None = None,
+        max_concurrent_invocations: int = 4,
+        max_pending_invocations: int = 256,
+        queue_timeout: float | None = None,
+        execution_timeout: float | None = None,
+        max_subagent_tasks: int = 16,
+        max_concurrent_subagents: int = 4,
+        enable_consolidation: bool = True,
+        enable_subagents: bool = True,
+        enable_cron: bool = True,
+        max_concurrency: int | None = None,
+        max_queue_size: int | None = None,
     ):
         from membot.config.schema import ExecToolConfig
         self.bus = bus
@@ -81,6 +134,9 @@ class AgentLoop:
         self.exec_config = exec_config or ExecToolConfig()
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
+        self.enable_consolidation = enable_consolidation
+        self.enable_subagents = enable_subagents
+        self.enable_cron = enable_cron
 
         self.context = ContextBuilder(workspace)
         self.sessions = session_manager or SessionManager(workspace)
@@ -100,18 +156,34 @@ class AgentLoop:
             brave_api_key=brave_api_key,
             exec_config=self.exec_config,
             restrict_to_workspace=restrict_to_workspace,
+            max_tasks=max_subagent_tasks,
+            max_concurrent=max_concurrent_subagents,
         )
 
         self._running = False
         self._mcp_servers = mcp_servers or {}
         self._mcp_stack: AsyncExitStack | None = None
         self._mcp_connected = False
-        self._mcp_connecting = False
-        self._consolidating: set[str] = set()  # Session keys with consolidation in progress
-        self._consolidation_tasks: set[asyncio.Task] = set()  # Strong refs to in-flight tasks
-        self._consolidation_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
-        self._active_tasks: dict[str, list[asyncio.Task]] = {}  # session_key -> tasks
-        self._processing_lock = asyncio.Lock()
+        self._mcp_init_lock = asyncio.Lock()
+        self._mcp_init_task: asyncio.Task | None = None
+
+        self.max_concurrent_invocations = max(
+            1, max_concurrency if max_concurrency is not None else max_concurrent_invocations
+        )
+        self.max_pending_invocations = max(
+            1, max_queue_size if max_queue_size is not None else max_pending_invocations
+        )
+        self.queue_timeout = queue_timeout if queue_timeout and queue_timeout > 0 else None
+        self.execution_timeout = (
+            execution_timeout if execution_timeout and execution_timeout > 0 else None
+        )
+        self._execution_semaphore = asyncio.Semaphore(self.max_concurrent_invocations)
+        self._scheduler_lock = asyncio.Lock()
+        self._long_term_memory_lock = asyncio.Lock()
+        self._session_states: dict[str, _SessionState] = {}
+        self._pending_invocations = 0
+        self._active_tasks: dict[str, set[asyncio.Task]] = {}
+        self._accepting = True
         self._register_default_tools()
 
     def _register_default_tools(self) -> None:
@@ -128,38 +200,140 @@ class AgentLoop:
         self.tools.register(WebSearchTool(api_key=self.brave_api_key))
         self.tools.register(WebFetchTool())
         self.tools.register(MessageTool(send_callback=self.bus.publish_outbound))
-        self.tools.register(SpawnTool(manager=self.subagents))
-        if self.cron_service:
+        if self.enable_subagents:
+            self.tools.register(SpawnTool(manager=self.subagents))
+        if self.cron_service and self.enable_cron:
             self.tools.register(CronTool(self.cron_service))
 
     async def _connect_mcp(self) -> None:
-        """Connect to configured MCP servers (one-time, lazy)."""
-        if self._mcp_connected or self._mcp_connecting or not self._mcp_servers:
+        """Connect to configured MCP servers once, sharing the in-flight task."""
+        if self._mcp_connected or not self._mcp_servers:
             return
-        self._mcp_connecting = True
-        from membot.agent.tools.mcp import connect_mcp_servers
-        try:
-            self._mcp_stack = AsyncExitStack()
-            await self._mcp_stack.__aenter__()
-            await connect_mcp_servers(self._mcp_servers, self.tools, self._mcp_stack)
-            self._mcp_connected = True
-        except Exception as e:
-            logger.error("Failed to connect MCP servers (will retry next message): {}", e)
-            if self._mcp_stack:
-                try:
-                    await self._mcp_stack.aclose()
-                except Exception:
-                    pass
-                self._mcp_stack = None
-        finally:
-            self._mcp_connecting = False
 
-    def _set_tool_context(self, channel: str, chat_id: str, message_id: str | None = None) -> None:
-        """Update context for all tools that need routing info."""
+        async with self._mcp_init_lock:
+            if self._mcp_connected:
+                return
+            task = self._mcp_init_task
+            if task is None or task.done():
+                task = asyncio.create_task(self._initialize_mcp())
+                self._mcp_init_task = task
+
+        try:
+            # Shield the shared initializer: cancellation of one invocation must
+            # not cancel initialization for all other invocations.
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error("Failed to connect MCP servers (will retry next message): {}", exc)
+            async with self._mcp_init_lock:
+                if self._mcp_init_task is task:
+                    self._mcp_init_task = None
+
+    async def _initialize_mcp(self) -> None:
+        """Perform one MCP initialization attempt."""
+        from membot.agent.tools.mcp import connect_mcp_servers
+
+        stack = AsyncExitStack()
+        try:
+            await stack.__aenter__()
+            await connect_mcp_servers(self._mcp_servers, self.tools, stack)
+        except Exception:
+            try:
+                await stack.aclose()
+            except Exception:
+                pass
+            raise
+        self._mcp_stack = stack
+        self._mcp_connected = True
+
+    @staticmethod
+    def _normalize_key(value: str) -> str:
+        """Normalize a user/session key without changing its scope semantics."""
+        value = str(value or "").strip()
+        if ":" not in value:
+            return value
+        channel, chat_id = value.split(":", 1)
+        return f"{channel.strip()}:{chat_id.strip()}"
+
+    def _resolve_execution_context(
+        self,
+        msg: InboundMessage,
+        session_key: str | None = None,
+    ) -> ExecutionContext:
+        """Resolve the real target before touching Session or tool state."""
+        if msg.channel == "system":
+            channel, chat_id = (
+                msg.chat_id.split(":", 1)
+                if ":" in msg.chat_id
+                else ("cli", msg.chat_id)
+            )
+            channel = channel.strip() or "cli"
+            chat_id = chat_id.strip() or "direct"
+            key = self._normalize_key(f"{channel}:{chat_id}")
+        else:
+            channel = str(msg.channel or "cli").strip()
+            chat_id = str(msg.chat_id or "direct").strip()
+            requested = session_key if session_key is not None else msg.session_key_override
+            key = self._normalize_key(requested or f"{channel}:{chat_id}")
+
+        metadata = msg.metadata or {}
+        return ExecutionContext(
+            session_key=key,
+            channel=channel,
+            chat_id=chat_id,
+            message_id=metadata.get("message_id") or metadata.get("messageId"),
+            request_id=metadata.get("request_id") or metadata.get("requestId"),
+            trace_id=metadata.get("trace_id") or metadata.get("traceId"),
+            invocation_id=metadata.get("invocation_id") or metadata.get("invocationId"),
+        )
+
+    def _build_invocation_tools(self, context: ExecutionContext) -> ToolRegistry:
+        """Clone registered tools and bind routing state to this invocation."""
+        tools = ToolRegistry()
+        for name, template in self.tools.items():
+            if isinstance(template, MessageTool):
+                tool = template.clone_for_execution()
+                tool.set_context(context.channel, context.chat_id, context.message_id)
+            elif isinstance(template, SpawnTool):
+                tool = template.clone_for_execution()
+                tool.set_context(context.channel, context.chat_id)
+                tool.set_session_key(context.session_key)
+                tool.set_correlation(
+                    context.request_id,
+                    context.trace_id,
+                    context.invocation_id,
+                )
+            elif isinstance(template, CronTool):
+                tool = template.clone_for_execution()
+                tool.set_context(context.channel, context.chat_id)
+            else:
+                clone = getattr(template, "clone_for_execution", None)
+                tool = clone() if clone else copy.copy(template)
+            tools.register(tool)
+        return tools
+
+    def _set_tool_context(
+        self,
+        channel: str,
+        chat_id: str,
+        message_id: str | None = None,
+        *,
+        tools: ToolRegistry | None = None,
+        session_key: str | None = None,
+    ) -> None:
+        """Bind compatibility callers to a supplied, invocation-owned registry."""
+        registry = tools or self.tools
         for name in ("message", "spawn", "cron"):
-            if tool := self.tools.get(name):
-                if hasattr(tool, "set_context"):
-                    tool.set_context(channel, chat_id, *([message_id] if name == "message" else []))
+            if tool := registry.get(name):
+                if name == "message" and hasattr(tool, "set_context"):
+                    tool.set_context(channel, chat_id, message_id)
+                elif name == "spawn" and hasattr(tool, "set_context"):
+                    tool.set_context(channel, chat_id)
+                    if session_key and hasattr(tool, "set_session_key"):
+                        tool.set_session_key(session_key)
+                elif name == "cron" and hasattr(tool, "set_context"):
+                    tool.set_context(channel, chat_id)
 
     @staticmethod
     def _strip_think(text: str | None) -> str | None:
@@ -183,9 +357,11 @@ class AgentLoop:
         self,
         initial_messages: list[dict],
         on_progress: Callable[..., Awaitable[None]] | None = None,
+        tools: ToolRegistry | None = None,
     ) -> tuple[str | None, list[str], list[dict]]:
         """Run the agent iteration loop. Returns (final_content, tools_used, messages)."""
         messages = initial_messages
+        registry = tools or self.tools
         iteration = 0
         final_content = None
         tools_used: list[str] = []
@@ -195,7 +371,7 @@ class AgentLoop:
 
             response = await self.provider.chat(
                 messages=messages,
-                tools=self.tools.get_definitions(),
+                tools=registry.get_definitions(),
                 model=self.model,
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
@@ -230,7 +406,7 @@ class AgentLoop:
                     tools_used.append(tool_call.name)
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
                     logger.info("Tool call: {}({})", tool_call.name, args_str[:200])
-                    result = await self.tools.execute(tool_call.name, tool_call.arguments)
+                    result = await registry.execute(tool_call.name, tool_call.arguments)
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
                     )
@@ -259,7 +435,7 @@ class AgentLoop:
         return final_content, tools_used, messages
 
     async def run(self) -> None:
-        """Run the agent loop, dispatching messages as tasks to stay responsive to /stop."""
+        """Consume the native bus and submit each message to the shared scheduler."""
         self._running = True
         await self._connect_mcp()
         logger.info("Agent loop started")
@@ -274,144 +450,390 @@ class AgentLoop:
                 await self._handle_stop(msg)
             else:
                 task = asyncio.create_task(self._dispatch(msg))
-                self._active_tasks.setdefault(msg.session_key, []).append(task)
-                task.add_done_callback(lambda t, k=msg.session_key: self._active_tasks.get(k, []) and self._active_tasks[k].remove(t) if t in self._active_tasks.get(k, []) else None)
+                key = self._resolve_execution_context(msg).session_key
+                self._active_tasks.setdefault(key, set()).add(task)
+
+                def _cleanup(done: asyncio.Task, session_key: str = key) -> None:
+                    tasks = self._active_tasks.get(session_key)
+                    if not tasks:
+                        return
+                    tasks.discard(done)
+                    if not tasks:
+                        self._active_tasks.pop(session_key, None)
+
+                task.add_done_callback(_cleanup)
 
     async def _handle_stop(self, msg: InboundMessage) -> None:
         """Cancel all active tasks and subagents for the session."""
-        tasks = self._active_tasks.pop(msg.session_key, [])
+        key = self._resolve_execution_context(msg).session_key
+        tasks = list(self._active_tasks.pop(key, set()))
         cancelled = sum(1 for t in tasks if not t.done() and t.cancel())
         for t in tasks:
             try:
                 await t
             except (asyncio.CancelledError, Exception):
                 pass
-        sub_cancelled = await self.subagents.cancel_by_session(msg.session_key)
+        sub_cancelled = await self.subagents.cancel_by_session(key)
         total = cancelled + sub_cancelled
         content = f"⏹ Stopped {total} task(s)." if total else "No active task to stop."
         await self.bus.publish_outbound(OutboundMessage(
-            channel=msg.channel, chat_id=msg.chat_id, content=content,
+            channel=key.split(":", 1)[0] if ":" in key else msg.channel,
+            chat_id=key.split(":", 1)[1] if ":" in key else msg.chat_id,
+            content=content,
+            metadata=msg.metadata or {},
         ))
 
     async def _dispatch(self, msg: InboundMessage) -> None:
-        """Process a message under the global lock."""
-        async with self._processing_lock:
-            try:
-                response = await self._process_message(msg)
-                if response is not None:
-                    await self.bus.publish_outbound(response)
-                elif msg.channel == "cli":
-                    await self.bus.publish_outbound(OutboundMessage(
-                        channel=msg.channel, chat_id=msg.chat_id,
-                        content="", metadata=msg.metadata or {},
-                    ))
-            except asyncio.CancelledError:
-                logger.info("Task cancelled for session {}", msg.session_key)
-                raise
-            except Exception:
-                logger.exception("Error processing message for session {}", msg.session_key)
+        """Submit a bus message; execution is serialized by its effective Session."""
+        context = self._resolve_execution_context(msg)
+        try:
+            await self._execute_entry(msg, context=context, publish=True)
+        except asyncio.CancelledError:
+            logger.info("Task cancelled for session {}", context.session_key)
+            raise
+        except Exception:
+            logger.exception("Error processing message for session {}", context.session_key)
+            await self.bus.publish_outbound(OutboundMessage(
+                channel=context.channel,
+                chat_id=context.chat_id,
+                content="Sorry, I encountered an error.",
+                metadata=msg.metadata or {},
+            ))
+
+    async def _execute_entry(
+        self,
+        msg: InboundMessage,
+        *,
+        context: ExecutionContext | None = None,
+        session_key: str | None = None,
+        on_progress: Callable[..., Awaitable[None]] | None = None,
+        publish: bool,
+    ) -> OutboundMessage | None:
+        """Single execution entrance used by bus, direct CLI, and future services."""
+        context = context or self._resolve_execution_context(msg, session_key)
+        response = await self._submit_invocation(msg, context, on_progress)
+        if publish:
+            if response is not None:
+                await self.bus.publish_outbound(response)
+            elif msg.channel == "cli":
                 await self.bus.publish_outbound(OutboundMessage(
-                    channel=msg.channel, chat_id=msg.chat_id,
-                    content="Sorry, I encountered an error.",
+                    channel=context.channel,
+                    chat_id=context.chat_id,
+                    content="",
+                    metadata=msg.metadata or {},
                 ))
+        return response
+
+    async def _submit_invocation(
+        self,
+        msg: InboundMessage,
+        context: ExecutionContext,
+        on_progress: Callable[..., Awaitable[None]] | None,
+    ) -> OutboundMessage | None:
+        """Enqueue work without consuming the Worker semaphore while waiting."""
+        async with self._scheduler_lock:
+            if not self._accepting:
+                raise RuntimeError("Agent loop is shutting down")
+            if self._pending_invocations >= self.max_pending_invocations:
+                raise InvocationQueueFullError(
+                    f"invocation queue is full ({self.max_pending_invocations})"
+                )
+            future: asyncio.Future[OutboundMessage | None] = asyncio.get_running_loop().create_future()
+            item = _ScheduledInvocation(
+                message=msg,
+                context=context,
+                future=future,
+                accepted_at=time.monotonic(),
+                on_progress=on_progress,
+            )
+            state = self._session_states.setdefault(context.session_key, _SessionState())
+            state.queue.append(item)
+            self._pending_invocations += 1
+            if state.drain_task is None:
+                state.drain_task = asyncio.create_task(self._drain_session(context.session_key))
+
+        try:
+            return await asyncio.shield(future)
+        except asyncio.CancelledError:
+            await self._cancel_invocation(item)
+            raise
+
+    async def _cancel_invocation(self, item: _ScheduledInvocation) -> None:
+        """Remove a queued item or cancel its isolated execution task."""
+        execution_task: asyncio.Task | None = None
+        async with self._scheduler_lock:
+            if item.future.done() or item.cancelled:
+                return
+            item.cancelled = True
+            for key, state in tuple(self._session_states.items()):
+                if item in state.queue:
+                    state.queue.remove(item)
+                    self._pending_invocations -= 1
+                    if not state.queue and state.running is None and state.drain_task is None:
+                        self._session_states.pop(key, None)
+                    item.future.cancel()
+                    return
+                if state.running is item:
+                    execution_task = item.execution_task
+                    break
+        if execution_task and not execution_task.done():
+            execution_task.cancel()
+            await asyncio.gather(execution_task, return_exceptions=True)
+        if not item.future.done():
+            item.future.cancel()
+
+    async def _drain_session(self, session_key: str) -> None:
+        """Run only the Session head, then release state when it becomes empty."""
+        try:
+            while True:
+                async with self._scheduler_lock:
+                    state = self._session_states.get(session_key)
+                    if state is None:
+                        return
+                    while state.queue and state.queue[0].cancelled:
+                        state.queue.popleft()
+                    if not state.queue:
+                        state.drain_task = None
+                        if state.running is None:
+                            self._session_states.pop(session_key, None)
+                        return
+                    item = state.queue.popleft()
+                    state.running = item
+
+                item.execution_task = asyncio.create_task(self._run_scheduled(item))
+                try:
+                    result = await item.execution_task
+                except asyncio.CancelledError:
+                    if not item.future.done():
+                        item.future.cancel()
+                    # A shutdown cancellation targets the drain task itself.
+                    # Do not swallow it and start the next queued invocation.
+                    if asyncio.current_task() and asyncio.current_task().cancelling():
+                        raise
+                except Exception as exc:
+                    if not item.future.done():
+                        item.future.set_exception(exc)
+                else:
+                    if not item.future.done():
+                        item.future.set_result(result)
+                finally:
+                    async with self._scheduler_lock:
+                        state = self._session_states.get(session_key)
+                        if state is not None:
+                            state.running = None
+                        self._pending_invocations -= 1
+        finally:
+            # A normal drain exits through the branch above. This fallback keeps
+            # cancellation/shutdown from retaining an empty Session state.
+            async with self._scheduler_lock:
+                state = self._session_states.get(session_key)
+                if state is not None and state.drain_task is asyncio.current_task():
+                    state.drain_task = None
+                    for queued in state.queue:
+                        queued.cancelled = True
+                        if not queued.future.done():
+                            queued.future.cancel()
+                    state.queue.clear()
+                    if state.running is not None and not state.running.future.done():
+                        state.running.future.cancel()
+                    self._session_states.pop(session_key, None)
+
+    async def _run_scheduled(self, item: _ScheduledInvocation) -> OutboundMessage | None:
+        """Admit one Session head, apply deadlines, and always release capacity."""
+        remaining_queue = None
+        if self.queue_timeout is not None:
+            remaining_queue = self.queue_timeout - (time.monotonic() - item.accepted_at)
+            if remaining_queue <= 0:
+                raise InvocationQueueTimeoutError("invocation expired while waiting for Worker admission")
+
+        acquired = False
+        try:
+            if remaining_queue is None:
+                await self._execution_semaphore.acquire()
+            else:
+                try:
+                    await asyncio.wait_for(self._execution_semaphore.acquire(), remaining_queue)
+                except asyncio.TimeoutError as exc:
+                    raise InvocationQueueTimeoutError(
+                        "invocation expired while waiting for Worker admission"
+                    ) from exc
+            acquired = True
+
+            token = set_execution_context(item.context)
+            try:
+                await self._connect_mcp()
+                process = self._process_message(
+                    item.message,
+                    session_key=item.context.session_key,
+                    on_progress=item.on_progress,
+                    execution_context=item.context,
+                )
+                if self.execution_timeout is None:
+                    return await process
+                try:
+                    return await asyncio.wait_for(process, self.execution_timeout)
+                except asyncio.TimeoutError as exc:
+                    raise InvocationExecutionTimeoutError(
+                        "invocation exceeded the execution timeout"
+                    ) from exc
+            finally:
+                reset_execution_context(token)
+        finally:
+            if acquired:
+                self._execution_semaphore.release()
 
     async def close_mcp(self) -> None:
         """Close MCP connections."""
+        if self._mcp_init_task and not self._mcp_init_task.done():
+            try:
+                await asyncio.shield(self._mcp_init_task)
+            except (asyncio.CancelledError, Exception):
+                pass
         if self._mcp_stack:
             try:
                 await self._mcp_stack.aclose()
             except (RuntimeError, BaseExceptionGroup):
                 pass  # MCP SDK cancel scope cleanup is noisy but harmless
             self._mcp_stack = None
+        self._mcp_connected = False
+        self._mcp_init_task = None
 
     def stop(self) -> None:
         """Stop the agent loop."""
         self._running = False
         logger.info("Agent loop stopping")
 
+    async def shutdown(self) -> None:
+        """Cancel in-flight work, clear scheduler state, and close resources."""
+        self.stop()
+        async with self._scheduler_lock:
+            self._accepting = False
+        active = {
+            task
+            for tasks in self._active_tasks.values()
+            for task in tasks
+            if not task.done()
+        }
+        for task in active:
+            task.cancel()
+        if active:
+            await asyncio.gather(*active, return_exceptions=True)
+
+        async with self._scheduler_lock:
+            drains = {
+                state.drain_task
+                for state in self._session_states.values()
+                if state.drain_task is not None and not state.drain_task.done()
+            }
+        for task in drains:
+            task.cancel()
+        if drains:
+            await asyncio.gather(*drains, return_exceptions=True)
+
+        async with self._scheduler_lock:
+            for state in self._session_states.values():
+                for item in state.queue:
+                    item.cancelled = True
+                    if not item.future.done():
+                        item.future.cancel()
+                if state.running and not state.running.future.done():
+                    state.running.future.cancel()
+            self._session_states.clear()
+            self._active_tasks.clear()
+            self._pending_invocations = 0
+
+        await self.subagents.cancel_all()
+        await self.close_mcp()
+
     async def _process_message(
         self,
         msg: InboundMessage,
         session_key: str | None = None,
         on_progress: Callable[[str], Awaitable[None]] | None = None,
+        execution_context: ExecutionContext | None = None,
     ) -> OutboundMessage | None:
-        """Process a single inbound message and return the response."""
-        # System messages: parse origin from chat_id ("channel:chat_id")
+        """Process one message with an invocation-local context and tool set."""
+        context = execution_context or self._resolve_execution_context(msg, session_key)
+        token = set_execution_context(context)
+        try:
+            return await self._process_message_with_context(msg, context, on_progress)
+        finally:
+            reset_execution_context(token)
+
+    async def _process_message_with_context(
+        self,
+        msg: InboundMessage,
+        context: ExecutionContext,
+        on_progress: Callable[[str], Awaitable[None]] | None,
+    ) -> OutboundMessage | None:
+        """Run the complete read/build/LLM-tool/save range for one Session head."""
+        tools = self._build_invocation_tools(context)
+
         if msg.channel == "system":
-            channel, chat_id = (msg.chat_id.split(":", 1) if ":" in msg.chat_id
-                                else ("cli", msg.chat_id))
             logger.info("Processing system message from {}", msg.sender_id)
-            key = f"{channel}:{chat_id}"
+            key = context.session_key
             session = self.memory_engine.store.get_or_create_session(key)
-            self._set_tool_context(channel, chat_id, msg.metadata.get("message_id"))
             history = await self.memory_engine.get_history(key, self.memory_window)
             messages = self.context.build_messages(
-                history=history,
-                current_message=msg.content, channel=channel, chat_id=chat_id,
+                history=history, current_message=msg.content,
+                channel=context.channel, chat_id=context.chat_id,
             )
-            final_content, _, all_msgs = await self._run_agent_loop(messages)
+            final_content, _, all_msgs = await self._run_agent_loop(messages, tools=tools)
             await self.memory_engine.save_turn(key, all_msgs, 1 + len(history))
-            return OutboundMessage(channel=channel, chat_id=chat_id,
-                                  content=final_content or "Background task completed.")
+            return OutboundMessage(
+                channel=context.channel,
+                chat_id=context.chat_id,
+                content=final_content or "Background task completed.",
+                metadata=msg.metadata or {},
+            )
 
         preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
         logger.info("Processing message from {}:{}: {}", msg.channel, msg.sender_id, preview)
 
-        key = session_key or msg.session_key
+        key = context.session_key
         session = self.memory_engine.store.get_or_create_session(key)
 
         # Slash commands
         cmd = msg.content.strip().lower()
         if cmd == "/new":
-            lock = self._consolidation_locks.setdefault(session.key, asyncio.Lock())
-            self._consolidating.add(session.key)
             try:
-                async with lock:
-                    snapshot = session.messages[session.last_consolidated:]
-                    if snapshot:
-                        temp = Session(key=session.key)
-                        temp.messages = list(snapshot)
-                        if not await self._consolidate_memory(temp, archive_all=True):
-                            return OutboundMessage(
-                                channel=msg.channel, chat_id=msg.chat_id,
-                                content="Memory archival failed, session not cleared. Please try again.",
-                            )
+                snapshot = session.messages[session.last_consolidated:]
+                if snapshot:
+                    temp = Session(key=session.key)
+                    temp.messages = list(snapshot)
+                    if not await self._consolidate_memory(temp, archive_all=True):
+                        return OutboundMessage(
+                            channel=context.channel, chat_id=context.chat_id,
+                            content="Memory archival failed, session not cleared. Please try again.",
+                            metadata=msg.metadata or {},
+                        )
             except Exception:
                 logger.exception("/new archival failed for {}", session.key)
                 return OutboundMessage(
-                    channel=msg.channel, chat_id=msg.chat_id,
+                    channel=context.channel, chat_id=context.chat_id,
                     content="Memory archival failed, session not cleared. Please try again.",
+                    metadata=msg.metadata or {},
                 )
-            finally:
-                self._consolidating.discard(session.key)
 
             await self.memory_engine.clear(session.key)
-            return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
-                                  content="New session started.")
+            return OutboundMessage(
+                channel=context.channel, chat_id=context.chat_id,
+                content="New session started.", metadata=msg.metadata or {},
+            )
         if cmd == "/help":
-            return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
-                                  content="🐈 membot commands:\n/new — Start a new conversation\n/stop — Stop the current task\n/help — Show available commands")
+            return OutboundMessage(
+                channel=context.channel, chat_id=context.chat_id,
+                content="🐈 membot commands:\n/new — Start a new conversation\n/stop — Stop the current task\n/help — Show available commands",
+                metadata=msg.metadata or {},
+            )
 
         unconsolidated = len(session.messages) - session.last_consolidated
-        if (unconsolidated >= self.memory_window and session.key not in self._consolidating):
-            self._consolidating.add(session.key)
-            lock = self._consolidation_locks.setdefault(session.key, asyncio.Lock())
+        if self.enable_consolidation and unconsolidated >= self.memory_window:
+            # Consolidation is deliberately inline in M1. It shares the same
+            # Session consistency range and cannot race the next turn.
+            await self._consolidate_memory(session)
 
-            async def _consolidate_and_unlock():
-                try:
-                    async with lock:
-                        await self._consolidate_memory(session)
-                finally:
-                    self._consolidating.discard(session.key)
-                    _task = asyncio.current_task()
-                    if _task is not None:
-                        self._consolidation_tasks.discard(_task)
-
-            _task = asyncio.create_task(_consolidate_and_unlock())
-            self._consolidation_tasks.add(_task)
-
-        self._set_tool_context(msg.channel, msg.chat_id, msg.metadata.get("message_id"))
-        if message_tool := self.tools.get("message"):
+        if message_tool := tools.get("message"):
             if isinstance(message_tool, MessageTool):
                 message_tool.start_turn()
 
@@ -420,7 +842,7 @@ class AgentLoop:
             history=history,
             current_message=msg.content,
             media=msg.media if msg.media else None,
-            channel=msg.channel, chat_id=msg.chat_id,
+            channel=context.channel, chat_id=context.chat_id,
         )
 
         async def _bus_progress(content: str, *, tool_hint: bool = False) -> None:
@@ -428,11 +850,12 @@ class AgentLoop:
             meta["_progress"] = True
             meta["_tool_hint"] = tool_hint
             await self.bus.publish_outbound(OutboundMessage(
-                channel=msg.channel, chat_id=msg.chat_id, content=content, metadata=meta,
+                channel=context.channel, chat_id=context.chat_id, content=content, metadata=meta,
             ))
 
         final_content, _, all_msgs = await self._run_agent_loop(
             initial_messages, on_progress=on_progress or _bus_progress,
+            tools=tools,
         )
 
         if final_content is None:
@@ -440,13 +863,13 @@ class AgentLoop:
 
         await self.memory_engine.save_turn(key, all_msgs, 1 + len(history))
 
-        if (mt := self.tools.get("message")) and isinstance(mt, MessageTool) and mt._sent_in_turn:
+        if (mt := tools.get("message")) and isinstance(mt, MessageTool) and mt._sent_in_turn:
             return None
 
         preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
         logger.info("Response to {}:{}: {}", msg.channel, msg.sender_id, preview)
         return OutboundMessage(
-            channel=msg.channel, chat_id=msg.chat_id, content=final_content,
+            channel=context.channel, chat_id=context.chat_id, content=final_content,
             metadata=msg.metadata or {},
         )
 
@@ -476,10 +899,11 @@ class AgentLoop:
 
     async def _consolidate_memory(self, session, archive_all: bool = False) -> bool:
         """Delegate to MemoryStore.consolidate(). Returns True on success."""
-        return await MemoryStore(self.workspace).consolidate(
-            session, self.provider, self.model,
-            archive_all=archive_all, memory_window=self.memory_window,
-        )
+        async with self._long_term_memory_lock:
+            return await MemoryStore(self.workspace).consolidate(
+                session, self.provider, self.model,
+                archive_all=archive_all, memory_window=self.memory_window,
+            )
 
     async def process_direct(
         self,
@@ -488,9 +912,21 @@ class AgentLoop:
         channel: str = "cli",
         chat_id: str = "direct",
         on_progress: Callable[[str], Awaitable[None]] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> str:
-        """Process a message directly (for CLI or cron usage)."""
-        await self._connect_mcp()
-        msg = InboundMessage(channel=channel, sender_id="user", chat_id=chat_id, content=content)
-        response = await self._process_message(msg, session_key=session_key, on_progress=on_progress)
+        """Process direct/cron work through the same Session scheduler as the bus."""
+        msg = InboundMessage(
+            channel=channel,
+            sender_id="user",
+            chat_id=chat_id,
+            content=content,
+            metadata=metadata or {},
+        )
+        context = self._resolve_execution_context(msg, session_key)
+        response = await self._execute_entry(
+            msg,
+            context=context,
+            on_progress=on_progress,
+            publish=False,
+        )
         return response.content if response else ""

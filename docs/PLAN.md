@@ -4,7 +4,7 @@ Each phase has a concrete gate. Commands are run from the repository root with
 `.venv` active by path; commands referring to future files become valid when
 that phase lands.
 
-## M0: review and baseline (current)
+## M0: review and baseline (complete)
 
 Review the current commit, call paths, mutable state, memory behavior, package
 layout, dependencies, tests, and wheel. Add the deterministic Fake Provider and
@@ -18,18 +18,22 @@ LITELLM_LOCAL_MODEL_COST_MAP=True ./.venv/bin/python scripts/m0_baseline.py --ou
 ./.venv/bin/python -m compileall -q agent bus channels cli config cron heartbeat providers session utils membot tests scripts
 ```
 
-## M1: runtime kernel
+## M1: runtime kernel (complete)
 
-Introduce an explicit invocation envelope, per-session acceptance sequence,
+Introduced an explicit invocation context, per-session acceptance sequence,
 per-session serial executor, Worker semaphore, bounded queues, cancellation, and
 separate queue/run deadlines while preserving the CLI path. Provider, tool, and
-memory context must be invocation-owned.
+memory context is invocation-owned. Consolidation is inline and service-mode
+background capabilities have explicit runtime switches and budgets.
 
 Acceptance:
 
 ```bash
-./.venv/bin/python -m pytest -q tests/test_runtime_kernel.py tests/test_runtime_timeouts.py
-./.venv/bin/python scripts/runtime_kernel_probe.py --fake --assert
+LITELLM_LOCAL_MODEL_COST_MAP=True ./.venv/bin/python -m pytest -q tests/test_runtime_kernel.py tests/test_runtime_timeouts.py
+LITELLM_LOCAL_MODEL_COST_MAP=True ./.venv/bin/python -m pytest -q
+./.venv/bin/ruff check --select E4,E7,E9,F,N bus/queue.py agent/tools/base.py agent/execution.py agent/loop.py agent/subagent.py agent/tools/message.py agent/tools/spawn.py agent/tools/cron.py agent/tools/registry.py config/schema.py cli/commands.py tests/test_runtime_kernel.py tests/test_runtime_timeouts.py
+./.venv/bin/python -m compileall -q agent bus channels cli config cron heartbeat providers session utils membot tests scripts
+LITELLM_LOCAL_MODEL_COST_MAP=True ./.venv/bin/python scripts/m0_baseline.py --output /tmp/membot-m1-baseline.json
 ```
 
 ## M2: persistence and delivery

@@ -2,6 +2,7 @@
 
 from typing import Any, Awaitable, Callable
 
+from membot.agent.execution import get_execution_context
 from membot.agent.tools.base import Tool
 from membot.bus.events import OutboundMessage
 
@@ -35,6 +36,10 @@ class MessageTool(Tool):
     def start_turn(self) -> None:
         """Reset per-turn send tracking."""
         self._sent_in_turn = False
+
+    def clone_for_execution(self) -> "MessageTool":
+        """Create an invocation-owned sender with the same callback."""
+        return MessageTool(send_callback=self._send_callback)
 
     @property
     def name(self) -> str:
@@ -94,9 +99,7 @@ class MessageTool(Tool):
             chat_id=chat_id,
             content=content,
             media=media or [],
-            metadata={
-                "message_id": message_id,
-            }
+            metadata=self._execution_metadata(message_id),
         )
 
         try:
@@ -107,3 +110,19 @@ class MessageTool(Tool):
             return f"Message sent to {channel}:{chat_id}{media_info}"
         except Exception as e:
             return f"Error sending message: {str(e)}"
+
+    @staticmethod
+    def _execution_metadata(message_id: str | None) -> dict[str, Any]:
+        """Carry invocation correlation IDs onto tool-originated messages."""
+        metadata: dict[str, Any] = {"message_id": message_id}
+        context = get_execution_context()
+        if context is None:
+            return metadata
+        for key, value in (
+            ("request_id", context.request_id),
+            ("trace_id", context.trace_id),
+            ("invocation_id", context.invocation_id),
+        ):
+            if value is not None:
+                metadata[key] = value
+        return metadata

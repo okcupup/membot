@@ -1,6 +1,7 @@
 """Base class for agent tools."""
 
 from abc import ABC, abstractmethod
+import copy
 from typing import Any
 
 
@@ -51,6 +52,16 @@ class Tool(ABC):
             String result of the tool execution.
         """
         pass
+
+    def clone_for_execution(self) -> "Tool":
+        """Return the invocation-owned tool instance used by the AgentLoop.
+
+        Stateless tools can use this compatibility default.  A tool with
+        mutable per-invocation fields should override the method and copy only
+        its immutable handles plus fresh state.  The AgentLoop never mutates a
+        registered template while an invocation is running.
+        """
+        return copy.copy(self)
 
     def validate_params(self, params: dict[str, Any]) -> list[str]:
         """Validate tool parameters against JSON schema. Returns error list (empty if valid)."""

@@ -13,9 +13,24 @@ class MessageBus:
     them and pushes responses to the outbound queue.
     """
 
-    def __init__(self):
-        self.inbound: asyncio.Queue[InboundMessage] = asyncio.Queue()
-        self.outbound: asyncio.Queue[OutboundMessage] = asyncio.Queue()
+    DEFAULT_MAXSIZE = 256
+
+    def __init__(
+        self,
+        *,
+        inbound_maxsize: int = DEFAULT_MAXSIZE,
+        outbound_maxsize: int = DEFAULT_MAXSIZE,
+    ):
+        """Create bounded inbound and outbound queues.
+
+        A full queue applies backpressure to its publisher.  ``maxsize`` is
+        intentionally required to be positive so a caller cannot accidentally
+        restore asyncio's unbounded queue behavior.
+        """
+        if inbound_maxsize < 1 or outbound_maxsize < 1:
+            raise ValueError("MessageBus queue sizes must be positive")
+        self.inbound: asyncio.Queue[InboundMessage] = asyncio.Queue(maxsize=inbound_maxsize)
+        self.outbound: asyncio.Queue[OutboundMessage] = asyncio.Queue(maxsize=outbound_maxsize)
 
     async def publish_inbound(self, msg: InboundMessage) -> None:
         """Publish a message from a channel to the agent."""

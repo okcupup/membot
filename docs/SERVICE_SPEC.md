@@ -1,7 +1,8 @@
 # Agent Service Specification
 
-This is the service contract for the planned backend. M0 records the current
-runtime and does not implement these endpoints.
+This is the service contract for the planned backend. M1 implements the
+in-process runtime kernel used by the existing CLI; the HTTP, Redis, and
+PostgreSQL endpoints remain planned for M2/M3.
 
 ## Scope
 
@@ -76,6 +77,33 @@ the execution budget. The Worker records which deadline fired.
   obey their own bounded policy.
 - Queue length, Worker memory, and in-process task registries are bounded. A full
   queue causes a visible retryable rejection or leaves the durable Outbox pending.
+
+The M1 in-process settings are under `agents.runtime`:
+
+```yaml
+agents:
+  runtime:
+    maxConcurrentInvocations: 4
+    maxPendingInvocations: 256
+    inboundQueueSize: 256
+    outboundQueueSize: 256
+    queueTimeoutSeconds: null
+    executionTimeoutSeconds: null
+    maxSubagentTasks: 16
+    maxConcurrentSubagents: 4
+    enableConsolidation: true
+    enableSubagents: true
+    enableCron: true
+```
+
+The native bus applies backpressure when either queue reaches its limit.
+`queueTimeoutSeconds` measures acceptance-to-admission waiting, while
+`executionTimeoutSeconds` starts only after the Worker semaphore is acquired.
+For a service process, disable `enableConsolidation`, `enableSubagents`, and
+`enableCron` until their durable lifecycle is implemented; the existing CLI
+gateway may enable them with the configured subagent cap. Heartbeat remains
+controlled by `gateway.heartbeat.enabled` and is disabled in a service process
+until a durable scheduler owns its lifecycle.
 
 The service must preserve at-least-once delivery. Idempotency keys, invocation
 leases, and event uniqueness prevent duplicate effects; they do not change the

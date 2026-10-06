@@ -73,6 +73,10 @@ class CronTool(Tool):
         self._channel = channel
         self._chat_id = chat_id
 
+    def clone_for_execution(self) -> "CronTool":
+        """Create an invocation-owned delivery context."""
+        return CronTool(self._cron)
+
     @property
     def name(self) -> str:
         return "cron"
