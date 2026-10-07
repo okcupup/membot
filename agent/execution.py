@@ -17,6 +17,10 @@ class ExecutionContext:
     request_id: str | None = None
     trace_id: str | None = None
     invocation_id: str | None = None
+    owner_id: str | None = None
+    session_id: str | None = None
+    session_seq: int | None = None
+    execution_owner: str | None = None
 
 
 _CURRENT_EXECUTION: ContextVar[ExecutionContext | None] = ContextVar(

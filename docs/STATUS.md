@@ -1,9 +1,9 @@
 # Project Status
 
-Date: 2026-10-06
+Date: 2026-10-08
 
-M0 and M1 are complete. No HTTP service, Redis queue, PostgreSQL schema, Docker
-Compose topology, or Nginx configuration has been implemented yet.
+M0, M1, and M2 are complete. HTTP API, long-running Worker, full deployment
+topology, and Nginx configuration remain planned for M3/M5.
 
 The reviewed starting commit was:
 
@@ -70,7 +70,61 @@ repository bytecode compilation also pass. A repeat of `scripts/m0_baseline.py`
 observes `provider_max_active=2` for the native bus (different Sessions
 overlap) and `provider_max_active=1` for two direct calls targeting one Session
 (that Session remains serial). These are behavioral observations for this
-commit, not performance claims. M2 is next:
-durable PostgreSQL state and transactional Outbox/Redis delivery. The wheel
-packaging defect remains a deployment blocker and is intentionally carried into
-M2/M5 rather than hidden by source-tree imports.
+commit, not performance claims.
+
+M2 implementation:
+
+- Added asyncpg migrations and repositories for `sessions`, `session_messages`,
+  `invocations`, `invocation_events`, `outbox`, and archived Session messages.
+  Session ordering allocation, invocation creation, initial event, and Outbox
+  insertion share one short transaction.
+- Idempotency keys are owner-scoped. Canonical payload hashes return the
+  original invocation for the same request and raise a conflict for a changed
+  body. Failed invocations retain their sequence; later work continues at the
+  next sequence after the earlier invocation becomes terminal.
+- PostgreSQL implements the ConversationMemoryEngine store/retriever boundary.
+  It reads only the requested history window, owns no cross-process Session
+  cache, and commits successful messages with invocation terminal state in one
+  short transaction. CLI continues using the existing JSONL engine.
+- `/new` archives current messages with their original ordered message IDs and
+  clears current history transactionally while keeping invocation and message
+  sequences monotonic. Provider errors, tool exceptions, iteration
+  exhaustion, cancellation, and timeout have structured technical outcomes;
+  only a normal Final is `SUCCEEDED`. Failed/partial protocol messages do not
+  enter session history.
+- Added a bounded Redis list transport with an unacknowledged processing list,
+  an Outbox retry relay, and expired-lease recovery. Delivery is at least once.
+  The M2 development Compose file contains only PostgreSQL and Redis.
+- PostgreSQL and Redis drivers are a `service` extra, so CLI-only installs do
+  not acquire database clients. Completion, `/new`, interruption, and lease
+  renewal are fenced by the current Worker owner and an unexpired lease.
+- Invocation errors pass a persistence-boundary redactor for common key/value,
+  bearer, and provider-token forms. Failed invocation result JSON omits partial
+  transcripts while preserving the structured outcome and redacted error.
+- Service construction injects `ConversationMemoryEngine.for_postgres(...)`.
+  Consolidation, subagents, and cron must be disabled until M3 owns their
+  durable lifecycle. CLI JSONL behavior remains the default.
+
+M2 verification environment and results:
+
+- The development host had no Docker/Podman and no installed database drivers.
+  `asyncpg` and `redis` were installed in `.venv`; PostgreSQL 13 and Redis 6
+  packages were installed on the host after disabling only the broken MySQL
+  package repositories for that command. Temporary local instances ran at
+  ports `55432` and `56379`. Docker Compose itself could not be run here.
+- A first ordinary sandbox run skipped five integration tests because loopback
+  access was denied. The elevated run first exposed PostgreSQL's default
+  `ident` TCP auth; tests were then run through a local peer-authenticated
+  PostgreSQL socket. These were environment setup issues, not code failures.
+- `LITELLM_LOCAL_MODEL_COST_MAP=True DATABASE_URL='postgresql:///membot?user=root&port=55432' REDIS_URL=redis://127.0.0.1:56379/0 ./.venv/bin/python -m pytest -q tests/test_persistence.py tests/test_outbox.py`
+  reports `8 passed`. This used real PostgreSQL 13 and Redis 6, including
+  concurrent sequence allocation, idempotency/conflict, repository-to-repository
+  visibility, AgentLoop history across instances, failure isolation, `/new`,
+  lease recovery, bounded Redis claims, and Outbox relay publication.
+- The complete test suite with both real services enabled reports `31 passed`;
+  the deterministic suite without those service URLs reports `23 passed,
+  8 skipped` because database integration cases require PostgreSQL/Redis.
+- Selected Ruff checks, `git diff --check`, repository bytecode compilation,
+  and YAML parsing of the Compose file pass.
+
+The wheel packaging defect recorded in M0 remains a deployment blocker for M5.

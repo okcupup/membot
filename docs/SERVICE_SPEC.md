@@ -1,8 +1,9 @@
 # Agent Service Specification
 
 This is the service contract for the planned backend. M1 implements the
-in-process runtime kernel used by the existing CLI; the HTTP, Redis, and
-PostgreSQL endpoints remain planned for M2/M3.
+in-process runtime kernel. M2 adds PostgreSQL history/invocation persistence,
+migrations, and bounded Redis Outbox transport. The HTTP API and long-running
+Worker process remain M3 work.
 
 ## Scope
 
@@ -105,8 +106,8 @@ gateway may enable them with the configured subagent cap. Heartbeat remains
 controlled by `gateway.heartbeat.enabled` and is disabled in a service process
 until a durable scheduler owns its lifecycle.
 
-The service must preserve at-least-once delivery. Idempotency keys, invocation
-leases, and event uniqueness prevent duplicate effects; they do not change the
+The service must preserve at-least-once delivery. Idempotency keys and
+conditional invocation claims reduce duplicate effects; they do not change the
 delivery guarantee to exactly-once.
 
 ## Persistence and recovery
@@ -115,10 +116,52 @@ PostgreSQL stores sessions, invocations, invocation context, state transitions,
 Outbox rows, and diagnostic events. The context snapshot used by an invocation
 is immutable after acceptance; later Session turns do not rewrite it.
 
-The API transaction inserts the invocation and Outbox row together. A relay
-retries pending Outbox rows until Redis accepts the envelope. The Worker updates
-the lease and state in PostgreSQL, appends events transactionally, and can safely
-reprocess a redelivered envelope.
+The API acceptance transaction inserts the invocation and Outbox row together.
+M2 implements the transaction in `PostgresRepository.accept_invocation`; the
+relay retries pending Outbox rows until Redis accepts the envelope. Redis
+transport is bounded and uses a ready list plus an unacknowledged processing
+list. Delivery is at least once: publication can precede a crash before the
+Outbox row is marked, and expired Worker leases are returned to `QUEUED` with
+the Outbox made publishable again.
+
+M2 migrations live in `agent/persistence/migrations/`. `sessions` owns
+`next_session_seq` and `next_message_seq`; owner-scoped uniqueness constraints
+protect both. `invocations` stores the immutable acceptance payload and hash,
+timeouts, execution owner/lease, timestamps, result, and terminal error. The
+same owner-scoped idempotency key plus canonical payload hash returns the
+original invocation; a different hash raises a conflict. The transaction that
+allocates a Session sequence also inserts `invocations`, its initial event, and
+its Outbox row. Failed invocations keep their sequence; the next accepted
+invocation receives the next sequence and can run once earlier entries are
+terminal.
+
+`session_messages` stores only complete successful turns. Service history is
+read by the PostgreSQL ConversationMemoryEngine adapter, with the requested
+memory window applied in SQL and no cross-process Session cache. Provider or
+tool failures and iteration exhaustion keep structured invocation results and
+events but do not append partial tool-call protocol or error text to history.
+The short completion transaction commits successful turn messages and terminal
+result together; no database transaction spans an LLM or Tool await. `/new` is
+an ordered invocation: its transaction archives current messages, clears the
+current history, and completes the invocation while preserving both monotonic
+invocation and message sequence identifiers.
+
+`ExecutionResult` separates `FINAL`, `PROVIDER_ERROR`, `TOOL_ERROR`,
+`ITERATION_LIMIT`, `CANCELLED`, `TIMEOUT`, and `INTERNAL_ERROR`. Only a normal
+`FINAL` maps to technical `SUCCEEDED`; evaluation of whether the requested
+business task was actually accomplished belongs to the regression/evaluation
+layer.
+
+CLI construction continues to select the JSONL-backed memory engine. A service
+process opts into PostgreSQL by injecting
+`ConversationMemoryEngine.for_postgres(repository, owner_id=...)` into
+`AgentLoop`. Until M3 owns background-task lifecycle, service configuration must
+set `enable_consolidation`, `enable_subagents`, and `enable_cron` to false.
+Install service-only drivers with `python -m pip install '.[service]'`.
+`DATABASE_URL` and `REDIS_URL` are used by migration/test tooling; M3 will
+centralize process configuration. M2 masks common key/value, bearer, and
+provider-token forms at the persistence boundary; M4 broadens and audits
+redaction across structured logs and timeline exports.
 
 On Worker interruption, an expired lease is recovered by a sweeper according to
 the retry policy. Recovery is visible in the event timeline and never silently

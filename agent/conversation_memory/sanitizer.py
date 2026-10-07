@@ -19,8 +19,8 @@ def sanitize_messages_for_storage(
 ) -> list[dict[str, Any]]:
     """Prepare LLM transcript messages for raw session storage.
 
-    This mirrors the current AgentLoop._save_turn behavior but is not wired
-    into the agent loop yet.
+    This mirrors the current JSONL persistence behavior and is shared with the
+    PostgreSQL ConversationMemoryEngine adapter.
     """
 
     sanitized: list[dict[str, Any]] = []

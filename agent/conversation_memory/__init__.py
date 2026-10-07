@@ -1,8 +1,8 @@
 """Conversation memory lifecycle abstractions.
 
-This package is not wired into AgentLoop yet. It provides the first pass of
-the current conversation-history lifecycle while leaving room for summaries,
-Redis storage, and vector retrieval.
+AgentLoop uses the JSONL engine for CLI operation and can be injected with the
+PostgreSQL adapter for service execution. The abstractions also leave room for
+summaries and other retrieval strategies.
 """
 
 from membot.agent.conversation_memory.engine import ConversationMemoryEngine
@@ -26,6 +26,7 @@ from membot.agent.conversation_memory.stores.base import MemoryStore
 
 __all__ = [
     "ConversationMemoryEngine",
+    "GraphExtractionExtractor",
     "MemoryExtractor",
     "MemoryManager",
     "MemoryPolicy",

@@ -22,6 +22,7 @@ from membot.agent.execution import (
     reset_execution_context,
     set_execution_context,
 )
+from membot.agent.execution_result import ExecutionOutcome, ExecutionResult
 from membot.agent.memory import MemoryStore
 from membot.agent.subagent import SubagentManager
 from membot.agent.tools.cron import CronTool
@@ -118,6 +119,7 @@ class AgentLoop:
         enable_cron: bool = True,
         max_concurrency: int | None = None,
         max_queue_size: int | None = None,
+        memory_engine: ConversationMemoryEngine | None = None,
     ):
         from membot.config.schema import ExecToolConfig
         self.bus = bus
@@ -139,11 +141,15 @@ class AgentLoop:
         self.enable_cron = enable_cron
 
         self.context = ContextBuilder(workspace)
-        self.sessions = session_manager or SessionManager(workspace)
-        self.memory_engine = ConversationMemoryEngine.for_workspace(
-            workspace,
-            session_manager=self.sessions,
-        )
+        if memory_engine is None:
+            self.sessions = session_manager or SessionManager(workspace)
+            self.memory_engine = ConversationMemoryEngine.for_workspace(
+                workspace, session_manager=self.sessions,
+            )
+        else:
+            self.sessions = session_manager
+            self.memory_engine = memory_engine
+        self._durable_memory = bool(getattr(self.memory_engine.store, "durable", False))
         self.tools = ToolRegistry()
         self.subagents = SubagentManager(
             provider=provider,
@@ -286,6 +292,10 @@ class AgentLoop:
             request_id=metadata.get("request_id") or metadata.get("requestId"),
             trace_id=metadata.get("trace_id") or metadata.get("traceId"),
             invocation_id=metadata.get("invocation_id") or metadata.get("invocationId"),
+            owner_id=metadata.get("owner_id") or metadata.get("ownerId"),
+            session_id=metadata.get("session_id") or metadata.get("sessionId"),
+            session_seq=metadata.get("session_seq") or metadata.get("sessionSeq"),
+            execution_owner=metadata.get("execution_owner") or metadata.get("executionOwner"),
         )
 
     def _build_invocation_tools(self, context: ExecutionContext) -> ToolRegistry:
@@ -358,8 +368,8 @@ class AgentLoop:
         initial_messages: list[dict],
         on_progress: Callable[..., Awaitable[None]] | None = None,
         tools: ToolRegistry | None = None,
-    ) -> tuple[str | None, list[str], list[dict]]:
-        """Run the agent iteration loop. Returns (final_content, tools_used, messages)."""
+    ) -> ExecutionResult:
+        """Run the agent iteration loop and classify its technical outcome."""
         messages = initial_messages
         registry = tools or self.tools
         iteration = 0
@@ -369,14 +379,26 @@ class AgentLoop:
         while iteration < self.max_iterations:
             iteration += 1
 
-            response = await self.provider.chat(
-                messages=messages,
-                tools=registry.get_definitions(),
-                model=self.model,
-                temperature=self.temperature,
-                max_tokens=self.max_tokens,
-                reasoning_effort=self.reasoning_effort,
-            )
+            try:
+                response = await self.provider.chat(
+                    messages=messages,
+                    tools=registry.get_definitions(),
+                    model=self.model,
+                    temperature=self.temperature,
+                    max_tokens=self.max_tokens,
+                    reasoning_effort=self.reasoning_effort,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.exception("LLM provider failed")
+                return ExecutionResult.failure(
+                    ExecutionOutcome.PROVIDER_ERROR,
+                    final_content="Sorry, I encountered an error calling the AI model.",
+                    messages=messages,
+                    error_code="PROVIDER_ERROR",
+                    error_message=str(exc),
+                )
 
             if response.has_tool_calls:
                 if on_progress:
@@ -406,18 +428,50 @@ class AgentLoop:
                     tools_used.append(tool_call.name)
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
                     logger.info("Tool call: {}({})", tool_call.name, args_str[:200])
-                    result = await registry.execute(tool_call.name, tool_call.arguments)
+                    try:
+                        result = await registry.execute(tool_call.name, tool_call.arguments)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        logger.exception("Tool failed: {}", tool_call.name)
+                        return ExecutionResult.failure(
+                            ExecutionOutcome.TOOL_ERROR,
+                            messages=messages,
+                            tools_used=tools_used,
+                            error_code="TOOL_ERROR",
+                            error_message=str(exc),
+                        )
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
                     )
+                    if isinstance(result, str) and result.lstrip().startswith("Error"):
+                        return ExecutionResult.failure(
+                            ExecutionOutcome.TOOL_ERROR,
+                            messages=messages,
+                            tools_used=tools_used,
+                            error_code="TOOL_ERROR",
+                            error_message=result,
+                        )
             else:
                 clean = self._strip_think(response.content)
                 # Don't persist error responses to session history — they can
                 # poison the context and cause permanent 400 loops (#1303).
                 if response.finish_reason == "error":
                     logger.error("LLM returned error: {}", (clean or "")[:200])
-                    final_content = clean or "Sorry, I encountered an error calling the AI model."
-                    break
+                    return ExecutionResult.failure(
+                        ExecutionOutcome.PROVIDER_ERROR,
+                        final_content=clean or "Sorry, I encountered an error calling the AI model.",
+                        messages=messages,
+                        error_code="PROVIDER_ERROR",
+                        error_message=clean,
+                    )
+                if clean is None:
+                    return ExecutionResult.failure(
+                        ExecutionOutcome.PROVIDER_ERROR,
+                        messages=messages,
+                        error_code="MISSING_FINAL",
+                        error_message="provider returned no final content",
+                    )
                 messages = self.context.add_assistant_message(
                     messages, clean, reasoning_content=response.reasoning_content,
                     thinking_blocks=response.thinking_blocks,
@@ -427,12 +481,20 @@ class AgentLoop:
 
         if final_content is None and iteration >= self.max_iterations:
             logger.warning("Max iterations ({}) reached", self.max_iterations)
-            final_content = (
-                f"I reached the maximum number of tool call iterations ({self.max_iterations}) "
-                "without completing the task. You can try breaking the task into smaller steps."
+            return ExecutionResult.failure(
+                ExecutionOutcome.ITERATION_LIMIT,
+                messages=messages,
+                tools_used=tools_used,
+                error_code="ITERATION_LIMIT",
+                error_message=f"maximum iterations reached: {self.max_iterations}",
             )
 
-        return final_content, tools_used, messages
+        return ExecutionResult(
+            outcome=ExecutionOutcome.FINAL,
+            final_content=final_content,
+            messages=messages,
+            tools_used=tools_used,
+        )
 
     async def run(self) -> None:
         """Consume the native bus and submit each message to the shared scheduler."""
@@ -678,9 +740,43 @@ class AgentLoop:
                     ) from exc
             finally:
                 reset_execution_context(token)
+        except asyncio.CancelledError:
+            await self._finish_durable_interruption(item.context, ExecutionOutcome.CANCELLED, "invocation cancelled")
+            raise
+        except InvocationQueueTimeoutError as exc:
+            await self._finish_durable_interruption(item.context, ExecutionOutcome.TIMEOUT, str(exc))
+            raise
+        except InvocationExecutionTimeoutError as exc:
+            await self._finish_durable_interruption(item.context, ExecutionOutcome.TIMEOUT, str(exc))
+            raise
+        except Exception as exc:
+            await self._finish_durable_interruption(item.context, ExecutionOutcome.INTERNAL_ERROR, str(exc))
+            raise
         finally:
             if acquired:
                 self._execution_semaphore.release()
+
+    async def _finish_durable_interruption(
+        self,
+        context: ExecutionContext,
+        outcome: ExecutionOutcome,
+        message: str,
+    ) -> None:
+        """Best-effort terminal persistence for cancellation and Worker errors."""
+        if not self._durable_memory or not context.invocation_id:
+            return
+        finish = getattr(self.memory_engine.store, "finish_interrupted", None)
+        if finish is None:
+            return
+        try:
+            await finish(
+                context.invocation_id,
+                outcome,
+                error_message=message,
+                execution_owner=context.execution_owner,
+            )
+        except Exception:
+            logger.exception("Unable to persist durable interruption for {}", context.invocation_id)
 
     async def close_mcp(self) -> None:
         """Close MCP connections."""
@@ -769,21 +865,35 @@ class AgentLoop:
         """Run the complete read/build/LLM-tool/save range for one Session head."""
         tools = self._build_invocation_tools(context)
 
+        async def _commit(result: ExecutionResult, all_messages: list[dict], skip: int) -> None:
+            if self._durable_memory:
+                if not context.invocation_id:
+                    raise RuntimeError("durable execution requires invocation_id in ExecutionContext")
+                await self.memory_engine.finish_invocation(
+                    context.invocation_id,
+                    context.session_key,
+                    result,
+                    all_messages,
+                    skip,
+                    execution_owner=context.execution_owner,
+                )
+            elif result.technical_success:
+                await self.memory_engine.save_turn(context.session_key, all_messages, skip)
+
         if msg.channel == "system":
             logger.info("Processing system message from {}", msg.sender_id)
             key = context.session_key
-            session = self.memory_engine.store.get_or_create_session(key)
             history = await self.memory_engine.get_history(key, self.memory_window)
             messages = self.context.build_messages(
                 history=history, current_message=msg.content,
                 channel=context.channel, chat_id=context.chat_id,
             )
-            final_content, _, all_msgs = await self._run_agent_loop(messages, tools=tools)
-            await self.memory_engine.save_turn(key, all_msgs, 1 + len(history))
+            result = await self._run_agent_loop(messages, tools=tools)
+            await _commit(result, result.messages, 1 + len(history))
             return OutboundMessage(
                 channel=context.channel,
                 chat_id=context.chat_id,
-                content=final_content or "Background task completed.",
+                content=result.final_content or "Background task failed.",
                 metadata=msg.metadata or {},
             )
 
@@ -791,11 +901,22 @@ class AgentLoop:
         logger.info("Processing message from {}:{}: {}", msg.channel, msg.sender_id, preview)
 
         key = context.session_key
-        session = self.memory_engine.store.get_or_create_session(key)
+        session = None if self._durable_memory else self.memory_engine.store.get_or_create_session(key)
 
         # Slash commands
         cmd = msg.content.strip().lower()
         if cmd == "/new":
+            if self._durable_memory:
+                if not context.invocation_id:
+                    raise RuntimeError("durable /new requires invocation_id")
+                await self.memory_engine.archive_and_finish_new(
+                    context.invocation_id,
+                    execution_owner=context.execution_owner,
+                )
+                return OutboundMessage(
+                    channel=context.channel, chat_id=context.chat_id,
+                    content="New session started.", metadata=msg.metadata or {},
+                )
             try:
                 snapshot = session.messages[session.last_consolidated:]
                 if snapshot:
@@ -821,13 +942,20 @@ class AgentLoop:
                 content="New session started.", metadata=msg.metadata or {},
             )
         if cmd == "/help":
+            if self._durable_memory:
+                result = ExecutionResult(
+                    outcome=ExecutionOutcome.FINAL,
+                    final_content="🐈 membot commands:\n/new — Start a new conversation\n/stop — Stop the current task\n/help — Show available commands",
+                    messages=[],
+                )
+                await _commit(result, [], 0)
             return OutboundMessage(
                 channel=context.channel, chat_id=context.chat_id,
                 content="🐈 membot commands:\n/new — Start a new conversation\n/stop — Stop the current task\n/help — Show available commands",
                 metadata=msg.metadata or {},
             )
 
-        unconsolidated = len(session.messages) - session.last_consolidated
+        unconsolidated = len(session.messages) - session.last_consolidated if session else 0
         if self.enable_consolidation and unconsolidated >= self.memory_window:
             # Consolidation is deliberately inline in M1. It shares the same
             # Session consistency range and cannot race the next turn.
@@ -853,15 +981,21 @@ class AgentLoop:
                 channel=context.channel, chat_id=context.chat_id, content=content, metadata=meta,
             ))
 
-        final_content, _, all_msgs = await self._run_agent_loop(
+        result = await self._run_agent_loop(
             initial_messages, on_progress=on_progress or _bus_progress,
             tools=tools,
         )
 
+        await _commit(result, result.messages, 1 + len(history))
+        final_content = result.final_content
         if final_content is None:
-            final_content = "I've completed processing but have no response to give."
-
-        await self.memory_engine.save_turn(key, all_msgs, 1 + len(history))
+            if result.outcome is ExecutionOutcome.ITERATION_LIMIT:
+                final_content = (
+                    f"I reached the maximum number of tool call iterations ({self.max_iterations}) "
+                    "without completing the task. You can try breaking the task into smaller steps."
+                )
+            elif result.outcome is not ExecutionOutcome.PROVIDER_ERROR:
+                final_content = "Sorry, I encountered an error calling the AI model."
 
         if (mt := tools.get("message")) and isinstance(mt, MessageTool) and mt._sent_in_turn:
             return None

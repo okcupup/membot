@@ -38,18 +38,28 @@ LITELLM_LOCAL_MODEL_COST_MAP=True ./.venv/bin/python scripts/m0_baseline.py --ou
 
 ## M2: persistence and delivery
 
-Add PostgreSQL migrations and repositories for sessions, invocations, context,
-events, leases, and Outbox rows. Add Redis envelope transport and a retrying
-Outbox relay. Verify restart and redelivery behavior with a disposable
-PostgreSQL/Redis pair.
+Add PostgreSQL migrations and repositories for owner-scoped sessions, ordered
+messages, invocations, events, leases, and Outbox rows. Reuse
+ConversationMemoryEngine with a stateless PostgreSQL adapter while leaving CLI
+JSONL behavior intact. Add idempotency hash checks, atomic turn/terminal commits,
+ordered `/new` archival, a bounded Redis envelope transport, and a retrying
+Outbox relay. Delivery remains at least once. Verify restart and recovery with
+real PostgreSQL/Redis services.
 
 Acceptance:
 
 ```bash
 docker compose -f deploy/docker-compose.test.yml up -d postgres redis
-./.venv/bin/python -m pytest -q tests/test_persistence.py tests/test_outbox.py
+./.venv/bin/python -m pip install -e '.[service]'
+DATABASE_URL=postgresql://membot:membot@127.0.0.1:55432/membot \
+REDIS_URL=redis://127.0.0.1:56379/0 \
+  ./.venv/bin/python -m pytest -q tests/test_persistence.py tests/test_outbox.py
 docker compose -f deploy/docker-compose.test.yml down -v
 ```
+
+The integration tests skip with an explicit reason when either local service is
+unavailable. The Compose file exposes PostgreSQL on host port `55432` and Redis
+on `56379` to avoid colliding with developer services.
 
 ## M3: asynchronous API and Worker
 
