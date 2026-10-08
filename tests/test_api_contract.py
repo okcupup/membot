@@ -19,6 +19,7 @@ class FakeInvocation:
 
         self.invocation_id = invocation_id
         self.session_id = "session-1"
+        self.owner_id = "default"
         self.session_key = "service:session-1"
         self.session_seq = 1
         self.status = type("Status", (), {"value": status})()
@@ -50,7 +51,7 @@ class FakeRepository:
     async def get_invocation(self, invocation_id):
         return self.invocation if invocation_id == self.invocation.invocation_id else None
 
-    async def events(self, invocation_id):
+    async def events(self, invocation_id, **kwargs):
         return [{"event_type": "accepted", "invocation_id": invocation_id}]
 
 

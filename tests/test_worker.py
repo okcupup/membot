@@ -169,7 +169,9 @@ async def test_worker_runs_outbox_stream_and_preserves_session_order(service_sta
         assert await repo.pool.fetchval(
             "SELECT count(*) FROM invocation_events WHERE invocation_id=$1 AND event_type='LLM'",
             first.invocation_id,
-        ) == 1
+        ) == 2
+        assert [event["step"] for event in await repo.events(first.invocation_id)
+                if event["event_type"] == "LLM"] == ["start", "end"]
         assert await repo.pool.fetchval(
             "SELECT count(*) FROM invocation_events WHERE invocation_id=$1 AND event_type='FINAL'",
             first.invocation_id,
@@ -225,12 +227,21 @@ async def test_worker_llm_timeout_and_queue_timeout_are_terminal(service_stack):
         assert terminal.status is InvocationStatus.TIMEOUT
         assert terminal.error_code == "LLM_TIMEOUT"
 
+        # Expire a durable submission before consuming it. An idle Worker may
+        # legitimately claim a short-deadline task immediately; that is an
+        # execution timeout, not evidence of a queue timeout.
+        await worker.stop(worker_lost=False)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
         queued, _ = await _accept(
             repo, config, "session-queue-timeout", "service:queue-timeout", "never",
             queue_timeout=0.01,
         )
-        await asyncio.sleep(0.1)
-        assert await repo.expire_queued() == 1 or (await repo.get_invocation(queued.invocation_id)).status is InvocationStatus.TIMEOUT
+        await repo.pool.execute(
+            "UPDATE invocations SET submitted_at=now()-interval '1 second' WHERE invocation_id=$1",
+            queued.invocation_id,
+        )
+        assert await repo.expire_queued() >= 1
         queued_done = await _wait_terminal(repo, queued.invocation_id)
         assert queued_done.status is InvocationStatus.TIMEOUT
         assert queued_done.error_code == "QUEUE_TIMEOUT"

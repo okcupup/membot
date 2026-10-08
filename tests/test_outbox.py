@@ -4,7 +4,6 @@ import os
 import uuid
 
 import pytest
-
 from membot.agent.persistence.redis_transport import OutboxRelay, QueueFullError, RedisTransport
 from membot.agent.persistence.repository import PostgresRepository
 
@@ -86,11 +85,11 @@ async def test_committed_outbox_is_published_and_marked():
                 )
                 return [dict(row)] if row else []
 
-            async def mark_outbox_published(self, outbox_id):
-                await repository.mark_outbox_published(outbox_id)
+            async def mark_outbox_published(self, outbox_id, **kwargs):
+                await repository.mark_outbox_published(outbox_id, **kwargs)
 
-            async def mark_outbox_failed(self, outbox_id, error):
-                await repository.mark_outbox_failed(outbox_id, error)
+            async def mark_outbox_failed(self, outbox_id, error, **kwargs):
+                await repository.mark_outbox_failed(outbox_id, error, **kwargs)
 
         relay = OutboxRelay(_SingleOutbox(), transport)
         assert await relay.publish_once() == 1
