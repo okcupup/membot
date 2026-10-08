@@ -2,8 +2,8 @@
 
 This is the service contract for the planned backend. M1 implements the
 in-process runtime kernel. M2 adds PostgreSQL history/invocation persistence,
-migrations, and bounded Redis Outbox transport. The HTTP API and long-running
-Worker process remain M3 work.
+migrations, and bounded Redis Outbox transport. M3 adds the asynchronous HTTP
+admission/query API and single-process Redis Streams Worker described below.
 
 ## Scope
 

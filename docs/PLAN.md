@@ -61,17 +61,20 @@ The integration tests skip with an explicit reason when either local service is
 unavailable. The Compose file exposes PostgreSQL on host port `55432` and Redis
 on `56379` to avoid colliding with developer services.
 
-## M3: asynchronous API and Worker
+## M3: asynchronous API and Worker (in progress)
 
 Add the `202` submission endpoint, status and event queries, one Worker process,
 bounded shutdown, request validation, and idempotency handling. Keep API
-instances stateless and route all durable history through PostgreSQL.
+instances stateless and route all durable history through PostgreSQL. Redis
+Streams use consumer groups, bounded prefetch, ACK and pending recovery;
+PostgreSQL Outbox publication is retried and reconciled after Redis loss.
 
 Acceptance:
 
 ```bash
 ./.venv/bin/python -m pytest -q tests/test_api_contract.py tests/test_worker.py
-./.venv/bin/python scripts/api_smoke.py --assert-202 --assert-timeline
+DATABASE_URL=... REDIS_URL=... ./.venv/bin/python -m pytest -q tests/test_worker.py
+./.venv/bin/python -m compileall -q service scripts agent
 ```
 
 ## M4: diagnostics and timeline
