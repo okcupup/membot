@@ -7,6 +7,7 @@ import copy
 import json
 import re
 import time
+import uuid
 from collections import deque
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
@@ -17,6 +18,7 @@ from loguru import logger
 
 from membot.agent.context import ContextBuilder
 from membot.agent.conversation_memory.engine import ConversationMemoryEngine
+from membot.agent.diagnostics import DiagnosticPersistenceError
 from membot.agent.execution import (
     ExecutionContext,
     reset_execution_context,
@@ -24,6 +26,7 @@ from membot.agent.execution import (
 )
 from membot.agent.execution_result import ExecutionOutcome, ExecutionResult
 from membot.agent.memory import MemoryStore
+from membot.agent.redaction import redact_data, redact_text, visible_text
 from membot.agent.subagent import SubagentManager
 from membot.agent.tools.cron import CronTool
 from membot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
@@ -122,6 +125,7 @@ class AgentLoop:
         admission_callback: Callable[[ExecutionContext], Awaitable[bool]] | None = None,
         readiness_callback: Callable[[ExecutionContext], Awaitable[bool]] | None = None,
         event_callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
+        strict_events: bool = False,
         max_subagent_tasks: int = 16,
         max_concurrent_subagents: int = 4,
         enable_consolidation: bool = True,
@@ -198,6 +202,7 @@ class AgentLoop:
         self.admission_callback = admission_callback
         self.readiness_callback = readiness_callback
         self.event_callback = event_callback
+        self.strict_events = strict_events
         self._execution_semaphore = asyncio.Semaphore(self.max_concurrent_invocations)
         self._scheduler_lock = asyncio.Lock()
         self._long_term_memory_lock = asyncio.Lock()
@@ -312,6 +317,9 @@ class AgentLoop:
             session_seq=metadata.get("session_seq") or metadata.get("sessionSeq"),
             execution_owner=metadata.get("execution_owner") or metadata.get("executionOwner"),
             max_iterations=metadata.get("max_iterations") or metadata.get("maxIterations"),
+            attempt=int(metadata.get("attempt") or 0),
+            execution_timeout_seconds=metadata.get("executionTimeoutSeconds"),
+            execution_timeout_override="executionTimeoutSeconds" in metadata,
         )
 
     def _build_invocation_tools(self, context: ExecutionContext) -> ToolRegistry:
@@ -397,6 +405,15 @@ class AgentLoop:
         iteration_limit = max_iterations if max_iterations is not None else self.max_iterations
         while iteration < iteration_limit:
             iteration += 1
+            llm_span = uuid.uuid4().hex
+            llm_meta = {"iteration": iteration, "span_id": llm_span,
+                        "parent_span_id": "invocation"}
+            await self._emit_event(event_callback, "LLM", {
+                **llm_meta, "step": "start", "model": self.model,
+                "messages": copy.deepcopy(messages),
+                "tools": registry.get_definitions(),
+            })
+            llm_started = time.monotonic()
 
             try:
                 provider_call = self.provider.chat(
@@ -411,14 +428,11 @@ class AgentLoop:
                     response = await provider_call
                 else:
                     response = await asyncio.wait_for(provider_call, self.llm_timeout)
-                await self._emit_event(event_callback, "llm", {
-                    "iteration": iteration,
-                    "toolCalls": [call.name for call in response.tool_calls],
-                    "finishReason": response.finish_reason,
-                })
             except asyncio.TimeoutError:
-                await self._emit_event(event_callback, "llm_timeout", {
-                    "iteration": iteration, "timeoutSeconds": self.llm_timeout,
+                await self._emit_event(event_callback, "LLM", {
+                    **llm_meta, "step": "error", "error_code": "LLM_TIMEOUT",
+                    "failure_kind": "timeout", "timeoutSeconds": self.llm_timeout,
+                    "duration_ms": (time.monotonic() - llm_started) * 1000,
                 })
                 return ExecutionResult.failure(
                     ExecutionOutcome.TIMEOUT,
@@ -426,15 +440,52 @@ class AgentLoop:
                     error_message="LLM call exceeded its timeout",
                 )
             except asyncio.CancelledError:
+                await self._emit_event(event_callback, "LLM", {
+                    **llm_meta, "step": "error", "error_code": "CANCELLED",
+                    "failure_kind": "cancelled",
+                    "duration_ms": (time.monotonic() - llm_started) * 1000,
+                })
+                raise
+            except DiagnosticPersistenceError:
                 raise
             except Exception as exc:
-                logger.exception("LLM provider failed")
+                await self._emit_event(event_callback, "LLM", {
+                    **llm_meta, "step": "error", "error_code": "PROVIDER_ERROR",
+                    "failure_kind": "exception", "message": str(exc),
+                    "exception_type": type(exc).__name__,
+                    "duration_ms": (time.monotonic() - llm_started) * 1000,
+                })
+                logger.error("LLM provider failed: {}", redact_text(str(exc)))
                 return ExecutionResult.failure(
                     ExecutionOutcome.PROVIDER_ERROR,
                     final_content="Sorry, I encountered an error calling the AI model.",
                     messages=messages,
                     error_code="PROVIDER_ERROR",
                     error_message=str(exc),
+                )
+
+            clean = self._strip_think(response.content)
+            recorded_response = {
+                "content": visible_text(response.content),
+                "tool_calls": [{"id": call.id, "name": call.name, "arguments": call.arguments}
+                               for call in response.tool_calls],
+                "finish_reason": response.finish_reason, "usage": response.usage,
+            }
+            provider_error = response.finish_reason == "error"
+            missing_final = not response.has_tool_calls and not (clean and clean.strip())
+            await self._emit_event(event_callback, "LLM", {
+                **llm_meta, "step": "error" if provider_error or missing_final else "end",
+                "error_code": "PROVIDER_ERROR" if provider_error else "MISSING_FINAL" if missing_final else None,
+                "failure_kind": "response" if provider_error or missing_final else None,
+                "response": recorded_response,
+                "duration_ms": (time.monotonic() - llm_started) * 1000,
+            })
+            if provider_error or missing_final:
+                return ExecutionResult.failure(
+                    ExecutionOutcome.PROVIDER_ERROR, final_content=clean,
+                    messages=messages, tools_used=tools_used,
+                    error_code="PROVIDER_ERROR" if provider_error else "MISSING_FINAL",
+                    error_message=clean if provider_error else "provider returned no final content",
                 )
 
             if response.has_tool_calls:
@@ -463,21 +514,29 @@ class AgentLoop:
 
                 for tool_call in response.tool_calls:
                     tools_used.append(tool_call.name)
-                    args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
+                    args_str = json.dumps(redact_data(tool_call.arguments), ensure_ascii=False)
                     logger.info("Tool call: {}({})", tool_call.name, args_str[:200])
+                    tool_meta = {
+                        "iteration": iteration, "name": tool_call.name,
+                        "tool_call_id": tool_call.id, "span_id": uuid.uuid4().hex,
+                        "parent_span_id": llm_span,
+                    }
+                    await self._emit_event(event_callback, "TOOL", {
+                        **tool_meta, "step": "start", "arguments": tool_call.arguments,
+                    })
+                    tool_started = time.monotonic()
                     try:
                         tool_call_awaitable = registry.execute(tool_call.name, tool_call.arguments)
                         if self.tool_timeout is None:
                             result = await tool_call_awaitable
                         else:
                             result = await asyncio.wait_for(tool_call_awaitable, self.tool_timeout)
-                        await self._emit_event(event_callback, "tool", {
-                            "name": tool_call.name, "callId": tool_call.id,
-                        })
                     except asyncio.TimeoutError:
-                        await self._emit_event(event_callback, "tool_timeout", {
-                            "name": tool_call.name, "callId": tool_call.id,
+                        await self._emit_event(event_callback, "TOOL", {
+                            **tool_meta, "step": "error", "error_code": "TOOL_TIMEOUT",
+                            "failure_kind": "timeout",
                             "timeoutSeconds": self.tool_timeout,
+                            "duration_ms": (time.monotonic() - tool_started) * 1000,
                         })
                         return ExecutionResult.failure(
                             ExecutionOutcome.TIMEOUT,
@@ -486,9 +545,21 @@ class AgentLoop:
                             error_message=f"tool {tool_call.name} exceeded its timeout",
                         )
                     except asyncio.CancelledError:
+                        await self._emit_event(event_callback, "TOOL", {
+                            **tool_meta, "step": "error", "error_code": "CANCELLED",
+                            "failure_kind": "cancelled",
+                            "duration_ms": (time.monotonic() - tool_started) * 1000,
+                        })
+                        raise
+                    except DiagnosticPersistenceError:
                         raise
                     except Exception as exc:
-                        logger.exception("Tool failed: {}", tool_call.name)
+                        await self._emit_event(event_callback, "TOOL", {
+                            **tool_meta, "step": "error", "error_code": "TOOL_ERROR",
+                            "failure_kind": "exception", "message": str(exc),
+                            "duration_ms": (time.monotonic() - tool_started) * 1000,
+                        })
+                        logger.error("Tool failed: {}: {}", tool_call.name, redact_text(str(exc)))
                         return ExecutionResult.failure(
                             ExecutionOutcome.TOOL_ERROR,
                             messages=messages,
@@ -496,10 +567,18 @@ class AgentLoop:
                             error_code="TOOL_ERROR",
                             error_message=str(exc),
                         )
+                    is_error = isinstance(result, str) and result.lstrip().startswith("Error")
+                    await self._emit_event(event_callback, "TOOL", {
+                        **tool_meta, "step": "error" if is_error else "end",
+                        "error_code": "TOOL_ERROR" if is_error else None,
+                        "failure_kind": "result" if is_error else None,
+                        "result": result,
+                        "duration_ms": (time.monotonic() - tool_started) * 1000,
+                    })
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
                     )
-                    if isinstance(result, str) and result.lstrip().startswith("Error"):
+                    if is_error:
                         return ExecutionResult.failure(
                             ExecutionOutcome.TOOL_ERROR,
                             messages=messages,
@@ -562,8 +641,10 @@ class AgentLoop:
             return
         try:
             await callback(event_type, payload)
-        except Exception:
-            logger.exception("Invocation event callback failed")
+        except Exception as exc:
+            logger.error("Invocation event callback failed: {}", redact_text(str(exc)))
+            if self.strict_events:
+                raise DiagnosticPersistenceError("invocation event persistence failed")
 
     async def run(self) -> None:
         """Consume the native bus and submit each message to the shared scheduler."""
@@ -825,10 +906,11 @@ class AgentLoop:
                     execution_context=item.context,
                     event_callback=item.event_callback,
                 )
-                if self.execution_timeout is None:
+                timeout = item.context.execution_timeout_seconds if item.context.execution_timeout_override else self.execution_timeout
+                if timeout is None:
                     return await process
                 try:
-                    return await asyncio.wait_for(process, self.execution_timeout)
+                    return await asyncio.wait_for(process, timeout)
                 except asyncio.TimeoutError as exc:
                     raise InvocationExecutionTimeoutError(
                         "invocation exceeded the execution timeout"
@@ -987,11 +1069,19 @@ class AgentLoop:
         if msg.channel == "system":
             logger.info("Processing system message from {}", msg.sender_id)
             key = context.session_key
+            read_started = time.monotonic()
             history = await self.memory_engine.get_history(key, self.memory_window)
             messages = self.context.build_messages(
                 history=history, current_message=msg.content,
                 channel=context.channel, chat_id=context.chat_id,
             )
+            await self._emit_event(event_callback, "HISTORY", {
+                "step": "read", "message_count": len(history),
+                "duration_ms": (time.monotonic() - read_started) * 1000,
+            })
+            await self._emit_event(event_callback, "CONTEXT", {
+                "step": "snapshot", "history": history, "messages": copy.deepcopy(messages),
+            })
             result = await self._run_agent_loop(
                 messages, tools=tools, event_callback=event_callback,
                 max_iterations=max_iterations,
@@ -1004,7 +1094,8 @@ class AgentLoop:
                 metadata=msg.metadata or {},
             )
 
-        preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
+        safe_content = redact_text(visible_text(msg.content)) or ""
+        preview = safe_content[:80] + "..." if len(safe_content) > 80 else safe_content
         logger.info("Processing message from {}:{}: {}", msg.channel, msg.sender_id, preview)
 
         key = context.session_key
@@ -1072,6 +1163,7 @@ class AgentLoop:
             if isinstance(message_tool, MessageTool):
                 message_tool.start_turn()
 
+        read_started = time.monotonic()
         history = await self.memory_engine.get_history(key, self.memory_window)
         initial_messages = self.context.build_messages(
             history=history,
@@ -1079,6 +1171,13 @@ class AgentLoop:
             media=msg.media if msg.media else None,
             channel=context.channel, chat_id=context.chat_id,
         )
+        await self._emit_event(event_callback, "HISTORY", {
+            "step": "read", "message_count": len(history),
+            "duration_ms": (time.monotonic() - read_started) * 1000,
+        })
+        await self._emit_event(event_callback, "CONTEXT", {
+            "step": "snapshot", "history": history, "messages": copy.deepcopy(initial_messages),
+        })
 
         async def _bus_progress(content: str, *, tool_hint: bool = False) -> None:
             meta = dict(msg.metadata or {})
@@ -1101,13 +1200,14 @@ class AgentLoop:
                     f"I reached the maximum number of tool call iterations ({max_iterations or self.max_iterations}) "
                     "without completing the task. You can try breaking the task into smaller steps."
                 )
-            elif result.outcome is not ExecutionOutcome.PROVIDER_ERROR:
+            else:
                 final_content = "Sorry, I encountered an error calling the AI model."
 
         if (mt := tools.get("message")) and isinstance(mt, MessageTool) and mt._sent_in_turn:
             return None
 
-        preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
+        safe_final = redact_text(visible_text(final_content)) or ""
+        preview = safe_final[:120] + "..." if len(safe_final) > 120 else safe_final
         logger.info("Response to {}:{}: {}", msg.channel, msg.sender_id, preview)
         return OutboundMessage(
             channel=context.channel, chat_id=context.chat_id, content=final_content,

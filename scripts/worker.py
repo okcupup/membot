@@ -7,12 +7,14 @@ import asyncio
 from membot.agent.persistence.redis_transport import RedisStreamTransport
 from membot.agent.persistence.repository import PostgresRepository
 from membot.service.config import ServiceConfig
+from membot.service.logging import configure_json_logging
 from membot.service.worker import AsyncWorker
 
 
 async def _run() -> None:
     config = ServiceConfig.from_env()
-    repository = await PostgresRepository.connect(config.database_url)
+    configure_json_logging("worker", policy=config.diagnostic_policy)
+    repository = await PostgresRepository.connect(config.database_url, diagnostics=config.diagnostic_policy)
     await repository.migrate()
     transport = await RedisStreamTransport.connect(
         config.redis_url,

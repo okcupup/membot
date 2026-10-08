@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from membot.agent.conversation_memory.engine import ConversationMemoryEngine
+from membot.agent.diagnostics import config_version
 from membot.agent.execution import ExecutionContext
 from membot.agent.execution_result import ExecutionOutcome
 from membot.agent.loop import AgentLoop
@@ -59,7 +61,7 @@ class AsyncWorker:
         self.provider = provider
         self.provider_factory = provider_factory
         self.workspace = workspace or Path(self.config.workspace)
-        self.execution_owner = self.config.worker_id
+        self.execution_owner = f"{self.config.worker_id}:{uuid.uuid4().hex}"
         self.agent: AgentLoop | None = None
         self._lock_connection: Any | None = None
         self._running = False
@@ -67,9 +69,11 @@ class AsyncWorker:
         self._stop_event = asyncio.Event()
         self._tasks: set[asyncio.Task[Any]] = set()
         self._inflight: dict[str, asyncio.Task[Any]] = {}
+        self._claimed: set[str] = set()
         self._needs_reconcile = True
         self._next_reconcile_at = 0.0
-        self._pending_recovery: list[tuple[str, dict[str, Any]]] | None = None
+        self._next_retention_at = 0.0
+        self._next_pending_at = 0.0
 
     async def _acquire_singleton_lock(self) -> None:
         pool = self.repository.pool
@@ -120,12 +124,32 @@ class AsyncWorker:
                 context.invocation_id or "", self.execution_owner,
                 lease_seconds=self.config.worker_lease_seconds,
             )
+            self._claimed.add(context.invocation_id or "")
+            effective_config = self.config.diagnostic_snapshot()
+            if self.agent is not None:
+                effective_config["providerType"] = type(self.agent.provider).__name__
+                effective_config["toolsetVersion"] = config_version({"tools": self.agent.tools.get_definitions()})
+            effective_config["maxIterations"] = context.max_iterations or self.config.max_iterations
+            if context.execution_timeout_override:
+                effective_config["executionTimeoutSeconds"] = context.execution_timeout_seconds
+            effective_config["configVersion"] = config_version({
+                key: value for key, value in effective_config.items() if key != "configVersion"
+            })
+            await self._event(context.invocation_id or "", "CONFIG", {
+                "step": "snapshot", "config": effective_config,
+            })
             return True
         except RuntimeError as exc:
             # A predecessor may still be running.  AgentLoop puts this Session
             # head back without consuming the semaphore and retries it.
             if "predecessor" in str(exc).lower():
                 return False
+            if "queue deadline" in str(exc).lower():
+                await self.repository.finish_interrupted(
+                    context.invocation_id or "", ExecutionOutcome.TIMEOUT,
+                    error_message="invocation queue deadline expired",
+                )
+                raise _AlreadyTerminalError(context.invocation_id or "") from exc
             current = await self.repository.get_invocation(context.invocation_id or "")
             if current is None or current.status in {
                 InvocationStatus.SUCCEEDED, InvocationStatus.FAILED, InvocationStatus.TIMEOUT,
@@ -140,11 +164,22 @@ class AsyncWorker:
         return await self.repository.session_predecessor_ready(context.invocation_id or "")
 
     async def _event(self, invocation_id: str, event_type: str, payload: dict[str, Any]) -> None:
-        try:
-            durable_type = {"llm": "LLM", "tool": "TOOL"}.get(event_type, event_type)
-            await self.repository.append_event(invocation_id, durable_type, payload)
-        except Exception:
-            logger.exception("could not persist event for %s", invocation_id)
+        await self.repository.append_event(
+            invocation_id, event_type, {**payload, "worker": self.execution_owner},
+            execution_owner=self.execution_owner,
+        )
+
+    async def _ack(self, invocation_id: str, entry_id: str) -> None:
+        span = uuid.uuid4().hex
+        meta = {"worker": self.execution_owner, "entry_id": entry_id,
+                "span_id": span, "parent_span_id": "invocation"}
+        await self.repository.append_event(invocation_id, "QUEUE", {**meta, "step": "ack_start"})
+        started = asyncio.get_running_loop().time()
+        count = await self.transport.ack(entry_id)
+        await self.repository.append_event(invocation_id, "QUEUE", {
+            **meta, "step": "ack", "acknowledged": count,
+            "duration_ms": (asyncio.get_running_loop().time() - started) * 1000,
+        })
 
     async def _build_agent(self) -> AgentLoop:
         provider = await self._build_provider()
@@ -168,12 +203,13 @@ class AsyncWorker:
             tool_timeout=self.config.tool_timeout_seconds,
             admission_callback=self._admit,
             readiness_callback=self._ready,
+            strict_events=True,
             enable_consolidation=False,
             enable_subagents=False,
             enable_cron=False,
         )
 
-    async def _run_entry(self, entry_id: str, envelope: dict[str, Any]) -> None:
+    async def _run_entry(self, entry_id: str, envelope: dict[str, Any], *, recovered: bool = False) -> None:
         invocation_id = str(envelope.get("invocationId") or "")
         if not invocation_id:
             await self.transport.ack(entry_id)
@@ -188,7 +224,7 @@ class AsyncWorker:
             if current and current.status in {
                 InvocationStatus.SUCCEEDED, InvocationStatus.FAILED, InvocationStatus.TIMEOUT,
             }:
-                await self.transport.ack(entry_id)
+                await self._ack(invocation_id, entry_id)
             return
         self._inflight[invocation_id] = asyncio.current_task()
         try:
@@ -196,10 +232,17 @@ class AsyncWorker:
             if current is None:
                 await self.transport.ack(entry_id)
                 return
+            await self.repository.append_event(invocation_id, "QUEUE", {
+                "step": "consume", "worker": self.execution_owner,
+                "entry_id": entry_id, "envelope": envelope,
+                "delivery_state": current.status.value,
+                "pending_recovery": recovered, "consumer": self.transport.consumer,
+                "group": self.transport.group,
+            })
             if current.status in {
                 InvocationStatus.SUCCEEDED, InvocationStatus.FAILED, InvocationStatus.TIMEOUT,
             }:
-                await self.transport.ack(entry_id)
+                await self._ack(invocation_id, entry_id)
                 return
             if current.status is not InvocationStatus.QUEUED:
                 return
@@ -210,7 +253,7 @@ class AsyncWorker:
                     error_code="OWNER_UNSUPPORTED",
                     error_message="Worker owner scope does not match invocation",
                 )
-                await self.transport.ack(entry_id)
+                await self._ack(invocation_id, entry_id)
                 return
             # This entry may have waited behind local prefetch while the
             # consumer loop was processing another task.  Re-read the row
@@ -222,7 +265,7 @@ class AsyncWorker:
             if current.status in {
                 InvocationStatus.SUCCEEDED, InvocationStatus.FAILED, InvocationStatus.TIMEOUT,
             }:
-                await self.transport.ack(entry_id)
+                await self._ack(invocation_id, entry_id)
                 return
             if current.status is not InvocationStatus.QUEUED:
                 return
@@ -240,7 +283,7 @@ class AsyncWorker:
                 if current.status in {
                     InvocationStatus.SUCCEEDED, InvocationStatus.FAILED, InvocationStatus.TIMEOUT,
                 }:
-                    await self.transport.ack(entry_id)
+                    await self._ack(invocation_id, entry_id)
                     return
                 if current.status is not InvocationStatus.QUEUED:
                     return
@@ -269,7 +312,14 @@ class AsyncWorker:
                 "traceId": current.trace_id,
                 "invocationId": current.invocation_id,
                 "executionOwner": self.execution_owner,
+                "attempt": current.attempt_count + 1,
+                "executionTimeoutSeconds": current.execution_timeout_seconds,
             }
+
+            async def progress(_: str, **kwargs: Any) -> None:
+                # Service diagnostics record visible provider/tool output;
+                # there is no channel gateway consuming the CLI progress bus.
+                pass
 
             async def entry_event(event_type: str, event_payload: dict[str, Any]) -> None:
                 await self._event(invocation_id, event_type, event_payload)
@@ -283,30 +333,33 @@ class AsyncWorker:
                 event_callback=entry_event,
                 max_iterations=int(payload.get("maxIterations", self.config.max_iterations)),
                 media=list(payload.get("media") or []),
+                on_progress=progress,
             )
             terminal = await self.repository.get_invocation(invocation_id)
             if terminal and terminal.status in {
                 InvocationStatus.SUCCEEDED, InvocationStatus.FAILED, InvocationStatus.TIMEOUT,
             }:
-                await self.transport.ack(entry_id)
+                await self._ack(invocation_id, entry_id)
         except _AlreadyTerminalError:
-            await self.transport.ack(entry_id)
+            await self._ack(invocation_id, entry_id)
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.exception("Worker execution failed for %s", invocation_id)
+            logger.exception("Worker execution failed", extra={"correlation": {"invocationId": invocation_id}})
             current = await self.repository.get_invocation(invocation_id)
             if current and current.status in {
                 InvocationStatus.SUCCEEDED, InvocationStatus.FAILED, InvocationStatus.TIMEOUT,
             }:
-                await self.transport.ack(entry_id)
+                await self._ack(invocation_id, entry_id)
         finally:
             self._inflight.pop(invocation_id, None)
+            self._claimed.discard(invocation_id)
 
     async def _publish_once(self) -> None:
         relay = OutboxRelay(
             self.repository, self.transport,
             batch_size=self.config.outbox_batch_size,
+            owner_id=self.config.owner_id, worker_id=self.execution_owner,
         )
         await relay.publish_once()
 
@@ -319,9 +372,14 @@ class AsyncWorker:
         # stream is genuinely empty and no pending entry remains.
         if await self.transport.depth() > 0:
             return
-        for envelope in await self.repository.queued_envelopes(limit=self.config.worker_prefetch):
+        for envelope in await self.repository.queued_envelopes(
+            limit=self.config.worker_prefetch, owner_id=self.config.owner_id,
+        ):
             try:
-                await self.transport.publish(envelope)
+                entry_id = await self.transport.publish(envelope)
+                await self.repository.append_event(envelope["invocationId"], "QUEUE", {
+                    "step": "reconcile", "worker": self.execution_owner, "entry_id": entry_id,
+                })
             except Exception:
                 logger.exception("could not reconcile invocation %s", envelope.get("invocationId"))
                 break
@@ -330,8 +388,24 @@ class AsyncWorker:
         while self._running:
             try:
                 await self._publish_once()
-                await self.repository.expire_queued(limit=self.config.worker_prefetch)
+                await self.repository.expire_queued(limit=self.config.worker_prefetch, worker_id=self.execution_owner)
+                for invocation_id in tuple(self._claimed):
+                    renewed = await self.repository.renew_lease(
+                        invocation_id, self.execution_owner,
+                        lease_seconds=self.config.worker_lease_seconds,
+                    )
+                    if not renewed:
+                        current = await self.repository.get_invocation(invocation_id)
+                        if current and current.status is InvocationStatus.RUNNING:
+                            self._lost = True
+                            self._running = False
+                            for task in tuple(self._tasks):
+                                task.cancel()
+                            break
                 now = asyncio.get_running_loop().time()
+                if now >= self._next_retention_at:
+                    await self.repository.purge_expired_events()
+                    self._next_retention_at = now + 60.0
                 if self._needs_reconcile or now >= self._next_reconcile_at:
                     await self._reconcile()
                     self._needs_reconcile = False
@@ -344,20 +418,24 @@ class AsyncWorker:
             await asyncio.sleep(self.config.outbox_poll_seconds)
 
     async def _consume_once(self) -> None:
-        if self._pending_recovery is None:
-            self._pending_recovery = await self.transport.recover_pending(
+        available = self.config.worker_prefetch - len(self._tasks)
+        if available <= 0:
+            await asyncio.sleep(self.config.queue_poll_seconds)
+            return
+        now = asyncio.get_running_loop().time()
+        recovered = now >= self._next_pending_at
+        entries = []
+        if recovered:
+            entries = await self.transport.recover_pending(
                 min_idle_ms=self.config.worker_pending_idle_ms,
-                count=self.config.worker_prefetch,
+                count=available,
             )
-        entries = self._pending_recovery or await self.transport.read(
-            timeout=self.config.queue_poll_seconds,
-            count=self.config.worker_prefetch,
-        )
-        self._pending_recovery = []
+            self._next_pending_at = now + 1.0
+        if not entries:
+            recovered = False
+            entries = await self.transport.read(timeout=self.config.queue_poll_seconds, count=available)
         for entry_id, envelope in entries:
-            if len(self._tasks) >= self.config.worker_prefetch:
-                break
-            task = asyncio.create_task(self._run_entry(entry_id, envelope))
+            task = asyncio.create_task(self._run_entry(entry_id, envelope, recovered=recovered))
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
         if self._tasks:
@@ -371,14 +449,14 @@ class AsyncWorker:
             await self.transport.ensure_group()
             # A previous process can only leave uncertain RUNNING work.  It is
             # fenced as failed; QUEUED rows remain ordered and are republished.
-            await self.repository.fail_all_running_worker_lost()
+            await self.repository.fail_all_running_worker_lost(owner_id=self.config.owner_id)
             self.agent = await self._build_agent()
             self._running = True
             self._lost = False
             self._stop_event.clear()
             self._needs_reconcile = True
             self._next_reconcile_at = 0.0
-            self._pending_recovery = None
+            self._next_pending_at = 0.0
             # Publish the committed Outbox before the first consume cycle.
             await self._publish_once()
         except Exception:

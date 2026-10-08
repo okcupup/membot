@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import time
 import uuid
 from typing import Any
 
@@ -14,15 +16,26 @@ from membot.agent.persistence.repository import (
     Invocation,
     PostgresRepository,
 )
+from membot.agent.redaction import redact_data
 from membot.service.config import ServiceConfig
+from membot.service.models import invocation_payload
+
+logger = logging.getLogger(__name__)
+REPOSITORY = web.AppKey("repository", PostgresRepository)
+CONFIG = web.AppKey("config", ServiceConfig)
+OWN_REPOSITORY = web.AppKey("own_repository", bool)
+_RequestKey = getattr(web, "RequestKey", web.AppKey)
+REQUEST_ID = _RequestKey("request_id", str)
+TRACE_ID = _RequestKey("trace_id", str)
+INVOCATION = _RequestKey("invocation", Invocation)
 
 
 def _request_id(request: web.Request) -> str:
-    return request.headers.get("X-Request-ID") or request.headers.get("X-Request-Id") or str(uuid.uuid4())
+    return request.get(REQUEST_ID) or request.headers.get("X-Request-ID") or str(uuid.uuid4())
 
 
 def _trace_id(request: web.Request) -> str:
-    return request.headers.get("X-Trace-ID") or request.headers.get("X-Trace-Id") or str(uuid.uuid4())
+    return request.get(TRACE_ID) or request.headers.get("X-Trace-ID") or str(uuid.uuid4())
 
 
 def _owner_id(request: web.Request, config: ServiceConfig) -> str:
@@ -33,32 +46,10 @@ def _owner_id(request: web.Request, config: ServiceConfig) -> str:
 
 
 def _json_response(payload: dict[str, Any], *, status: int = 200, request_id: str | None = None) -> web.Response:
-    headers = {"Content-Type": "application/json"}
+    headers = {}
     if request_id:
         headers["X-Request-ID"] = request_id
-    return web.json_response(payload, status=status, headers=headers)
-
-
-def invocation_payload(invocation: Invocation) -> dict[str, Any]:
-    payload = {
-        "invocationId": invocation.invocation_id,
-        "sessionId": invocation.session_id,
-        "sessionKey": invocation.session_key,
-        "sessionSeq": invocation.session_seq,
-        "status": invocation.status.value,
-        "requestId": invocation.request_id,
-        "traceId": invocation.trace_id,
-        "submittedAt": invocation.submitted_at.isoformat(),
-        "startedAt": invocation.started_at.isoformat() if invocation.started_at else None,
-        "finishedAt": invocation.finished_at.isoformat() if invocation.finished_at else None,
-    }
-    if invocation.result is not None:
-        payload["result"] = invocation.result
-    if invocation.error_code:
-        payload["errorCode"] = invocation.error_code
-    if invocation.error_message:
-        payload["errorMessage"] = invocation.error_message
-    return payload
+    return web.json_response(redact_data(payload) if status >= 400 else payload, status=status, headers=headers)
 
 
 async def _read_json(request: web.Request, max_bytes: int) -> dict[str, Any]:
@@ -86,10 +77,37 @@ def create_api_app(
 ) -> web.Application:
     """Create an API app.  No AgentLoop is constructed in this process."""
     config = config or ServiceConfig.from_env()
-    app = web.Application(client_max_size=config.max_payload_bytes)
-    app["repository"] = repository
-    app["config"] = config
-    app["own_repository"] = own_repository
+    @web.middleware
+    async def request_logging(request: web.Request, handler):
+        request[REQUEST_ID] = _request_id(request)
+        request[TRACE_ID] = _trace_id(request)
+        started = time.monotonic()
+        try:
+            response = await handler(request)
+        except web.HTTPException as exc:
+            response = _json_response({"error": exc.reason, "detail": exc.text}, status=exc.status,
+                                      request_id=request[REQUEST_ID])
+        response.headers["X-Request-ID"] = request[REQUEST_ID]
+        task = request.get(INVOCATION)
+        correlation = {
+            "requestId": task.request_id if task else request[REQUEST_ID],
+            "traceId": task.trace_id if task else request[TRACE_ID],
+            "queryRequestId": request[REQUEST_ID] if task else None,
+            "invocationId": task.invocation_id if task else None,
+            "sessionId": task.session_id if task else None,
+            "event_type": "HTTP_API", "step": "response",
+            "duration_ms": (time.monotonic() - started) * 1000,
+            "status": response.status, "method": request.method,
+            "route": request.match_info.route.resource.canonical if request.match_info.route.resource else None,
+            "error_code": f"HTTP_{response.status}" if response.status >= 400 else None,
+        }
+        logger.info("HTTP response", extra={"correlation": correlation})
+        return response
+
+    app = web.Application(client_max_size=config.max_payload_bytes, middlewares=[request_logging])
+    app[REPOSITORY] = repository
+    app[CONFIG] = config
+    app[OWN_REPOSITORY] = own_repository
 
     async def live(_: web.Request) -> web.Response:
         return _json_response({"status": "live"})
@@ -98,7 +116,7 @@ def create_api_app(
         try:
             await repository.pool.fetchval("SELECT 1")
         except Exception as exc:
-            return _json_response({"status": "not_ready", "error": str(exc)[:200]}, status=503, request_id=_request_id(request))
+            return _json_response({"status": "not_ready", "error": redact_data(str(exc))[:200]}, status=503, request_id=_request_id(request))
         return _json_response({"status": "ready"}, request_id=_request_id(request))
 
     async def create_session(request: web.Request) -> web.Response:
@@ -144,7 +162,10 @@ def create_api_app(
             content = body.get("message", body.get("content"))
             if not isinstance(content, str) or not content.strip():
                 raise web.HTTPBadRequest(text="message must be a non-empty string")
-            iterations = int(body.get("maxIterations", config.max_iterations))
+            try:
+                iterations = int(body.get("maxIterations", config.max_iterations))
+            except (ValueError, TypeError):
+                raise web.HTTPBadRequest(text="maxIterations must be an integer")
             if iterations < 1 or iterations > config.max_iterations:
                 raise web.HTTPBadRequest(text=f"maxIterations must be between 1 and {config.max_iterations}")
             payload = {
@@ -164,7 +185,9 @@ def create_api_app(
                 queue_timeout_seconds=config.queue_timeout_seconds,
                 execution_timeout_seconds=config.execution_timeout_seconds,
                 max_unfinished=config.max_unfinished,
+                diagnostic_config=config.diagnostic_snapshot(),
             )
+            request[INVOCATION] = invocation
         except web.HTTPException:
             raise
         except IdempotencyConflictError as exc:
@@ -187,18 +210,38 @@ def create_api_app(
             return _json_response({"error": "database_unavailable", "detail": str(exc)[:200]}, status=503, request_id=request_id)
         if invocation is None:
             return _json_response({"error": "not_found"}, status=404, request_id=request_id)
+        if invocation.owner_id != _owner_id(request, config):
+            return _json_response({"error": "not_found"}, status=404, request_id=request_id)
+        request[INVOCATION] = invocation
         return _json_response(invocation_payload(invocation), request_id=request_id)
 
     async def get_events(request: web.Request) -> web.Response:
         request_id = _request_id(request)
         try:
+            after = int(request.query.get("after", 0))
+            limit = int(request.query.get("limit", 500))
+            if after < 0 or not 1 <= limit <= 1000:
+                raise ValueError("cursor out of range")
+        except ValueError:
+            raise web.HTTPBadRequest(text="after must be >= 0 and limit between 1 and 1000")
+        try:
             invocation = await repository.get_invocation(request.match_info["invocation_id"])
             if invocation is None:
                 return _json_response({"error": "not_found"}, status=404, request_id=request_id)
-            events = await repository.events(invocation.invocation_id)
+            if invocation.owner_id != _owner_id(request, config):
+                return _json_response({"error": "not_found"}, status=404, request_id=request_id)
+            request[INVOCATION] = invocation
+            events = await repository.events(invocation.invocation_id, after=after, limit=limit)
+        except web.HTTPException:
+            raise
         except Exception as exc:
             return _json_response({"error": "database_unavailable", "detail": str(exc)[:200]}, status=503, request_id=request_id)
-        return _json_response({"invocationId": invocation.invocation_id, "traceId": invocation.trace_id, "events": events}, request_id=request_id)
+        return _json_response({
+            "invocationId": invocation.invocation_id, "traceId": invocation.trace_id,
+            "requestId": invocation.request_id, "sessionId": invocation.session_id,
+            "events": events, "nextAfter": events[-1]["sequence"] if len(events) == limit else None,
+            "retentionDays": config.diagnostic_retention_days,
+        }, request_id=request_id)
 
     app.router.add_get("/live", live)
     app.router.add_get("/ready", ready)
@@ -209,7 +252,7 @@ def create_api_app(
     app.router.add_get("/v1/invocations/{invocation_id}/events", get_events)
 
     async def cleanup(_: web.Application) -> None:
-        if app["own_repository"]:
+        if app[OWN_REPOSITORY]:
             await repository.close()
 
     app.on_cleanup.append(cleanup)

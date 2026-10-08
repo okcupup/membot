@@ -22,6 +22,9 @@ class ExecutionContext:
     session_seq: int | None = None
     execution_owner: str | None = None
     max_iterations: int | None = None
+    attempt: int = 0
+    execution_timeout_seconds: float | None = None
+    execution_timeout_override: bool = False
 
 
 _CURRENT_EXECUTION: ContextVar[ExecutionContext | None] = ContextVar(

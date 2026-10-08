@@ -4,23 +4,27 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 from dataclasses import replace
 
 from aiohttp import web
 from membot.agent.persistence.repository import PostgresRepository
 from membot.service.api import create_api_app
 from membot.service.config import ServiceConfig
+from membot.service.logging import configure_json_logging
 
 
 async def _serve(config: ServiceConfig) -> None:
-    repository = await PostgresRepository.connect(config.database_url)
+    repository = await PostgresRepository.connect(config.database_url, diagnostics=config.diagnostic_policy)
     await repository.migrate()
     app = create_api_app(repository, config, own_repository=True)
-    runner = web.AppRunner(app)
+    runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, config.api_host, config.api_port)
     await site.start()
-    print(f"membot API listening on http://{config.api_host}:{config.api_port}", flush=True)
+    logging.getLogger(__name__).info("API listening", extra={"correlation": {
+        "host": config.api_host, "port": config.api_port, "event_type": "API_START",
+    }})
     try:
         await asyncio.Event().wait()
     finally:
@@ -33,6 +37,7 @@ def main() -> None:
     parser.add_argument("--port", type=int)
     args = parser.parse_args()
     config = ServiceConfig.from_env()
+    configure_json_logging("api", policy=config.diagnostic_policy)
     if args.host:
         config = replace(config, api_host=args.host)
     if args.port:

@@ -9,6 +9,7 @@ remains the durable source of work.
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from typing import Any
 
@@ -222,27 +223,45 @@ class OutboxRelay:
     def __init__(
         self, repository: Any, transport: Any, *, batch_size: int = 100,
         max_retry_seconds: float = 30.0,
+        owner_id: str | None = None,
+        worker_id: str | None = None,
     ):
         self.repository = repository
         self.transport = transport
         self.batch_size = max(1, batch_size)
         self.max_retry_seconds = max(0.1, max_retry_seconds)
+        self.owner_id = owner_id
+        self.worker_id = worker_id
 
     async def publish_once(self) -> int:
         published = 0
-        for row in await self.repository.pending_outbox(limit=self.batch_size):
+        query = {"limit": self.batch_size}
+        if self.owner_id is not None:
+            query["owner_id"] = self.owner_id
+        for row in await self.repository.pending_outbox(**query):
+            span_id = uuid.uuid4().hex
+            record_start = getattr(self.repository, "record_outbox_start", None)
+            if record_start is not None:
+                await record_start(row["outbox_id"], worker=self.worker_id, span_id=span_id)
+            started = time.monotonic()
             try:
                 envelope = row["envelope"]
                 if isinstance(envelope, str):
                     envelope = json.loads(envelope)
-                await self.transport.publish(envelope)
+                entry_id = await self.transport.publish(envelope)
             except Exception as exc:
                 attempts = int(row.get("attempts") or 0)
                 retry_seconds = min(self.max_retry_seconds, max(0.1, 2 ** min(attempts, 8)))
                 await self.repository.mark_outbox_failed(
                     row["outbox_id"], str(exc), retry_seconds=retry_seconds,
+                    worker=self.worker_id, span_id=span_id,
+                    duration_ms=(time.monotonic() - started) * 1000,
+                    error_code="QUEUE_FULL" if isinstance(exc, QueueFullError) else "OUTBOX_PUBLISH_ERROR",
                 )
                 continue
-            await self.repository.mark_outbox_published(row["outbox_id"])
+            await self.repository.mark_outbox_published(
+                row["outbox_id"], worker=self.worker_id, span_id=span_id,
+                entry_id=entry_id, duration_ms=(time.monotonic() - started) * 1000,
+            )
             published += 1
         return published

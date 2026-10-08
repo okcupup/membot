@@ -1,5 +1,6 @@
 """PostgreSQL-backed service persistence."""
 
+from membot.agent.persistence.redis_transport import OutboxRelay, QueueFullError, RedisTransport
 from membot.agent.persistence.repository import (
     CapacityError,
     IdempotencyConflictError,
@@ -7,7 +8,6 @@ from membot.agent.persistence.repository import (
     InvocationStatus,
     PostgresRepository,
 )
-from membot.agent.persistence.redis_transport import OutboxRelay, QueueFullError, RedisTransport
 
 __all__ = [
     "IdempotencyConflictError",
