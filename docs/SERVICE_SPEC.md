@@ -1,9 +1,11 @@
 # Agent Service Specification
 
-This is the service contract for the planned backend. M1 implements the
-in-process runtime kernel. M2 adds PostgreSQL history/invocation persistence,
-migrations, and bounded Redis Outbox transport. M3 adds the asynchronous HTTP
-admission/query API and single-process Redis Streams Worker described below.
+This is the service contract for the backend. M1 implements the in-process
+runtime kernel. M2 adds PostgreSQL history/invocation persistence, migrations,
+and bounded Redis Outbox transport. M3 adds the asynchronous HTTP admission,
+query API, and single-process Redis Streams Worker. M4 adds durable
+Invocation diagnostics, structured stdout logs, timeline viewing, and safe
+recorded replay.
 
 ## Scope
 
@@ -42,8 +44,12 @@ identity and does not create a second logical task.
 `GET /v1/invocations/{invocationId}` returns the durable status, timestamps,
 error code/message (when terminal), and final result when available.
 `GET /v1/invocations/{invocationId}/events` returns the ordered diagnostic
-timeline. The timeline contains `LLM`, `TOOL`, `RESULT`, and `FINAL` event
-categories and carries all three IDs.
+timeline. It accepts `after` and `limit` cursors (at most 1000 per response)
+and returns `nextAfter` when more events remain. A query has its own HTTP
+`X-Request-ID`; the response and every event retain the original submission
+`requestId` and `traceId`. The timeline contains queue, `LLM`, `TOOL`, history,
+`result`, and `FINAL` categories and carries `invocationId`, `traceId`, the
+original `requestId`, and `sessionId`.
 
 ## State machine
 
@@ -158,10 +164,10 @@ process opts into PostgreSQL by injecting
 `AgentLoop`. Until M3 owns background-task lifecycle, service configuration must
 set `enable_consolidation`, `enable_subagents`, and `enable_cron` to false.
 Install service-only drivers with `python -m pip install '.[service]'`.
-`DATABASE_URL` and `REDIS_URL` are used by migration/test tooling; M3 will
-centralize process configuration. M2 masks common key/value, bearer, and
-provider-token forms at the persistence boundary; M4 broadens and audits
-redaction across structured logs and timeline exports.
+`DATABASE_URL` and `REDIS_URL` are used by service processes and migration/test
+tooling. M2 masks common key/value, bearer, and provider-token forms at the
+persistence boundary; M4 applies the same policy to structured logs, event
+payloads, status blobs, timeline exports, and candidate cases.
 
 On Worker interruption, an expired lease is recovered by a sweeper according to
 the retry policy. Recovery is visible in the event timeline and never silently
@@ -169,17 +175,82 @@ reports success.
 
 ## Diagnostics
 
-Every API, queue, Worker, provider, tool, and persistence log line includes
-`requestId`, `traceId`, and `invocationId` when an invocation exists. Event
-payloads are structured JSON, redact secrets, and preserve provider/tool error
-details without turning an error text into a result.
+PostgreSQL `invocation_events` is the diagnostic source of truth. Migration
+`0002_diagnostics.sql` adds a per-Invocation `event_seq`, `worker_id`,
+`attempt`, `step`, `span_id`, `parent_span_id`, `tool_call_id`, `duration_ms`,
+`error_code`, and `expires_at`. The event row itself supplies the immutable
+`invocationId`, `traceId`, original submission `requestId`, and `sessionId`.
+Event sequence allocation updates the Invocation row in the same short
+transaction, so concurrent API, Outbox, queue, and Worker writers cannot reuse
+an ordinal. A failed transaction emits no staged event log.
 
-The minimum timeline is:
+The normal timeline is:
 
 ```text
-accepted -> queued -> claimed/running -> llm.start/end
-         -> tool.start/end (zero or more) -> result -> final
+accepted -> OUTBOX.publish -> QUEUE.consume -> running
+  -> CONTEXT/HISTORY.read -> CONFIG.snapshot
+  -> LLM.start/end (zero or more)
+  -> TOOL.start/end (zero or more)
+  -> HISTORY.commit -> result.end -> FINAL.end
+  -> QUEUE.ack_start/ack
 ```
+
+Errors and deadlines close the relevant span with `step=error` and an
+`error_code`; they never produce a `FINAL` or technical `SUCCEEDED`. Provider
+and Tool payloads include visible requests/responses, controlled errors, and
+durations. Model private reasoning fields are excluded. API HTTP logs use the
+query request ID separately from the Invocation's original request ID.
+
+Payload policy is explicit and bounded. The default is 65,536 UTF-8 JSON bytes
+per captured payload and seven days retention; configure with
+`MEMBOT_DIAGNOSTIC_PAYLOAD_BYTES` (512..1048576) and
+`MEMBOT_DIAGNOSTIC_RETENTION_DAYS` (1..365). Every captured payload records
+`truncated`, `original_size`, `redacted_size`, and `size_unit`; an overflow is
+a redacted preview and is never replayable. A background Worker purge removes
+expired event rows. Status blobs retain compact structured outcomes and do not
+store a complete transcript; complete visible diagnostic data belongs to the
+event rows.
+
+Service entry points configure JSON logging on stdout. The formatter applies
+the same redaction policy and does not include logger locals or model private
+reasoning. Redis messages contain IDs and the accepted payload only; ContextVar
+values are never assumed to cross a process boundary.
+
+Use the read-only viewer:
+
+```bash
+./.venv/bin/python scripts/trace_probe.py <invocation-id> \
+  --database-url "$DATABASE_URL" --assert-correlation --assert-redaction
+./.venv/bin/python scripts/trace_probe.py <invocation-id> \
+  --api-url http://127.0.0.1:8080 --export-recording /tmp/invocation.json
+```
+
+The viewer prints `LLM -> Tool -> Result -> Final`, failure nodes, incomplete
+spans, queue/execution/tool/LLM timing, retention gaps, and truncation markers.
+`--json` is a machine-readable form. Its default path only reads PostgreSQL or
+the GET API and does not execute tools.
+
+`--reproduce` is an opt-in safe replay. It creates a disposable workspace,
+injects only Provider/Tool adapters backed by recorded visible responses, and
+refuses missing, tampered, expired, truncated, incomplete, multi-attempt,
+`WORKER_LOST`, or `CANCELLED` recordings. It cannot call normal network,
+filesystem, shell, MCP, cron, subagent, or database tools. Replay reproduces
+the state/result contract, not original wall-clock timing or private model
+reasoning.
+
+Failed or timed-out records can be exported as candidate regression cases:
+
+```bash
+./.venv/bin/python scripts/trace_probe.py <invocation-id> \
+  --export-candidate candidate.json
+```
+
+Candidates include redacted input, an intact history snapshot when available,
+configuration/version, observed status and failure summary, tool observations,
+and retention metadata. `expected.confirmed` is false with no answer by
+default. `--confirm-expected` requires an explicit status and tool constraints
+and still does not register the case in the standard suite; an observed wrong
+answer is never promoted automatically.
 
 ## Deployment and health
 

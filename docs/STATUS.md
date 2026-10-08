@@ -2,8 +2,9 @@
 
 Date: 2026-10-08
 
-M0, M1, and M2 are complete. M3 API/Queue/Worker execution is implemented on
-the feature branch; deployment topology and Nginx remain planned for M5.
+M0 through M4 are complete on the feature branch. M3 API/Queue/Worker execution
+and M4 Invocation diagnostics are implemented; deployment topology and Nginx
+remain planned for M5.
 
 The reviewed starting commit was:
 
@@ -161,3 +162,54 @@ the M3 checkpoint, rerun the integration command from `docs/PLAN.md` with
 PostgreSQL and Redis available.
 
 The wheel packaging defect recorded in M0 remains a deployment blocker for M5.
+
+M4 implementation:
+
+- Added `0002_diagnostics.sql` fields and retention index. Every Invocation gets
+  a PostgreSQL-allocated event sequence and immutable correlation IDs. Event
+  writes and durable state changes use short transactions; staged JSON logs are
+  emitted only after commit.
+- Recorded API admission, Outbox publication/error, Queue consume/ACK and
+  pending recovery, RUNNING, configuration/context/history, LLM start/end/error,
+  Tool start/end/error, Result, Final, timeout, failure, and Worker interruption
+  events. Each record includes step, worker/attempt, spans, tool call ID,
+  duration, error code, expiry, and bounded redacted payload.
+- Added JSON stdout logging for service processes and separated query
+  `requestId` from the Invocation's original request ID. API event queries are
+  paged and owner-scoped.
+- Added `scripts/trace_probe.py` for read-only timeline rendering, timing/error
+  summaries, recording export, reviewed failure candidates, and safe replay with
+  Recorded Provider/Tool adapters in a disposable workspace. Replay refuses
+  incomplete, truncated, expired, tampered, multi-attempt, Worker-lost, and
+  cancelled recordings. Candidate `expected` remains unconfirmed by default.
+- Kept status result blobs compact and separately bounded Final/error captures;
+  large visible payloads carry explicit truncation metadata. Private reasoning,
+  credentials, authorization headers, and common contact identifiers are
+  redacted before persistence or stdout.
+
+M4 verification:
+
+```text
+DATABASE_URL=postgresql://membot:membot@127.0.0.1:55432/membot_m4_20261008 \
+REDIS_URL=redis://127.0.0.1:56379/0 \
+LITELLM_LOCAL_MODEL_COST_MAP=True \
+./.venv/bin/python -m pytest -q -rs
+69 passed in 17.02s
+```
+
+The run used the real local PostgreSQL 13.23 and Redis service. It covered
+multi-round LLM/Tool timelines, provider and tool errors, LLM/Tool/execution
+timeouts, iteration exhaustion, queue expiry, ownership loss, duplicate ACK,
+redaction and retention, two API processes, migration backfill, safe replay,
+candidate export, and stdout JSON logs. Ruff, bytecode compilation, and
+`git diff --check` also passed. Docker is unavailable in this environment, so
+M5 deployment checks remain future work; no performance number is claimed.
+
+Remaining risks:
+
+1. The wheel still omits root implementation packages; fix packaging before
+   deployment work.
+2. Docker Compose/Nginx/HTTPS and production health/shutdown smoke tests remain
+   M5.
+3. M6 still needs the 32-case regression/evaluation corpus and real-provider
+   evaluation; M4 only exports reviewed candidates.

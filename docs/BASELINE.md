@@ -162,6 +162,27 @@ LITELLM_LOCAL_MODEL_COST_MAP=True ./.venv/bin/python scripts/m0_baseline.py \
 This is a deterministic behavior probe, not a throughput benchmark. The
 original M0 observations above remain the historical baseline for comparison.
 
+## M4 diagnostic baseline
+
+The M4 deterministic and real-service checks use the same Fake Provider/Tool
+fixtures as the runtime tests. The diagnostic path now records bounded,
+redacted event payloads in PostgreSQL and emits the committed event record as
+JSON on service stdout. The complete acceptance command was:
+
+```bash
+DATABASE_URL=postgresql://membot:membot@127.0.0.1:55432/membot_m4_20261008 \
+REDIS_URL=redis://127.0.0.1:56379/0 \
+LITELLM_LOCAL_MODEL_COST_MAP=True \
+./.venv/bin/python -m pytest -q -rs
+```
+
+It reported `69 passed in 17.02s`. This is a regression result, not a
+throughput measurement. The tests verify event sequence uniqueness, original
+ID propagation, redaction, explicit UTF-8 truncation metadata, retention,
+failure/timeout nodes, read-only export, safe replay isolation, and candidate
+cases with unconfirmed expectations. PostgreSQL 13.23 was queried directly;
+Docker was unavailable, so deployment behavior is not part of this baseline.
+
 ## Next-phase risks carried forward
 
 1. Move service state, context, and events to PostgreSQL and add a transactional

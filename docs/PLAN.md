@@ -61,7 +61,7 @@ The integration tests skip with an explicit reason when either local service is
 unavailable. The Compose file exposes PostgreSQL on host port `55432` and Redis
 on `56379` to avoid colliding with developer services.
 
-## M3: asynchronous API and Worker (in progress)
+## M3: asynchronous API and Worker (complete)
 
 Add the `202` submission endpoint, status and event queries, one Worker process,
 bounded shutdown, request validation, and idempotency handling. Keep API
@@ -77,18 +77,37 @@ DATABASE_URL=... REDIS_URL=... ./.venv/bin/python -m pytest -q tests/test_worker
 ./.venv/bin/python -m compileall -q service scripts agent
 ```
 
-## M4: diagnostics and timeline
+The real-service M3 checks run against PostgreSQL and Redis; integration tests
+must not be counted as passing when either dependency is unavailable.
 
-Emit structured logs and PostgreSQL events for LLM, Tool, Result, and Final
-steps. Add correlation propagation, redaction, error classification, and an
-invocation timeline export.
+## M4: diagnostics and timeline (complete)
+
+Persist a bounded, redacted event timeline for admission, Outbox, Queue,
+RUNNING, history, LLM, Tool, Result, Final, failure, timeout, and ACK steps.
+Use one PostgreSQL sequence per Invocation, JSON stdout logs, read-only timeline
+viewing, safe recorded replay, and manually reviewed failure-case export.
+Keep status results compact so a large Final cannot bypass diagnostic limits.
 
 Acceptance:
 
 ```bash
-./.venv/bin/python -m pytest -q tests/test_diagnostics.py
-./.venv/bin/python scripts/trace_probe.py --assert-correlation --assert-redaction
+DATABASE_URL=postgresql://membot:membot@127.0.0.1:55432/membot_m4_20261008 \
+REDIS_URL=redis://127.0.0.1:56379/0 \
+LITELLM_LOCAL_MODEL_COST_MAP=True \
+  ./.venv/bin/python -m pytest -q -rs
+./.venv/bin/ruff check agent/diagnostics.py agent/redaction.py agent/execution.py \
+  agent/loop.py agent/persistence service scripts/api_server.py scripts/worker.py \
+  scripts/trace_probe.py tests/test_diagnostics.py \
+  tests/test_diagnostics_integration.py tests/support/m4_worker.py \
+  tests/test_worker.py tests/test_api_contract.py tests/test_outbox.py
+./.venv/bin/python -m compileall -q agent bus channels cli config cron heartbeat \
+  providers session utils membot service tests scripts
+git diff --check
 ```
+
+The M4 acceptance run on 2026-10-08 reports `69 passed in 17.02s` against
+PostgreSQL 13.23 and the local Redis service. No performance claim is inferred
+from that wall-clock value.
 
 ## M5: deployment
 
