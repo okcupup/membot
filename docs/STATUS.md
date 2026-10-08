@@ -2,8 +2,8 @@
 
 Date: 2026-10-08
 
-M0, M1, and M2 are complete. HTTP API, long-running Worker, full deployment
-topology, and Nginx configuration remain planned for M3/M5.
+M0, M1, and M2 are complete. M3 API/Queue/Worker execution is implemented on
+the feature branch; deployment topology and Nginx remain planned for M5.
 
 The reviewed starting commit was:
 
@@ -126,5 +126,38 @@ M2 verification environment and results:
   8 skipped` because database integration cases require PostgreSQL/Redis.
 - Selected Ruff checks, `git diff --check`, repository bytecode compilation,
   and YAML parsing of the Compose file pass.
+
+M3 implementation:
+
+- Added stateless aiohttp admission/query endpoints. Submission persists the
+  invocation, session sequence, and Outbox row before returning `202` with
+  `Location`, request/trace/invocation identifiers. API processes never build
+  an AgentLoop. Owner headers are restricted to the Worker-configured owner in
+  the single-Worker topology.
+- Added Redis Streams consumer-group transport with bounded prefetch, ACK,
+  pending recovery (`XAUTOCLAIM`/fallback), stream depth limits, and Outbox
+  retry/backoff. A Worker reconciles durable QUEUED rows when Redis loses data.
+- Added a PostgreSQL advisory-lock singleton Worker. It fences RUNNING work as
+  `WORKER_LOST` on startup, claims Session heads only after readiness and the
+  global execution semaphore, persists LLM/Tool/Result/Final events, ACKs only
+  after a terminal commit, and cancels local tasks when ownership is lost.
+- Queue deadlines are applied by the database maintenance transition, so
+  waiting work does not consume execution capacity. Terminal rows are fenced
+  by execution owner and lease; duplicate deliveries only ACK.
+
+M3 verification:
+
+```text
+./.venv/bin/ruff check service/worker.py service/api.py: passed
+LITELLM_LOCAL_MODEL_COST_MAP=True ./.venv/bin/python -m pytest -q: 24 passed, 14 skipped
+./.venv/bin/python -m compileall -q agent service bus membot tests scripts: passed
+```
+
+The local PostgreSQL/Redis instances used by M2 were stopped when M3 was
+verified, and this sandbox cannot open loopback sockets. Consequently the four
+`tests/test_worker.py` cases were explicitly skipped for unavailable
+integration services; the deterministic API and runtime tests passed. Before
+the M3 checkpoint, rerun the integration command from `docs/PLAN.md` with
+PostgreSQL and Redis available.
 
 The wheel packaging defect recorded in M0 remains a deployment blocker for M5.
