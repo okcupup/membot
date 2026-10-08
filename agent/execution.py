@@ -21,6 +21,7 @@ class ExecutionContext:
     session_id: str | None = None
     session_seq: int | None = None
     execution_owner: str | None = None
+    max_iterations: int | None = None
 
 
 _CURRENT_EXECUTION: ContextVar[ExecutionContext | None] = ContextVar(

@@ -54,6 +54,10 @@ class InvocationExecutionTimeoutError(TimeoutError):
     """Raised when an admitted invocation exceeds its execution budget."""
 
 
+class InvocationAdmissionDeferredError(RuntimeError):
+    """Raised when durable Session order is not ready for this queue head."""
+
+
 @dataclass(slots=True)
 class _ScheduledInvocation:
     """One accepted invocation waiting in, or executing from, a Session queue."""
@@ -63,6 +67,7 @@ class _ScheduledInvocation:
     future: asyncio.Future[OutboundMessage | None]
     accepted_at: float
     on_progress: Callable[..., Awaitable[None]] | None = None
+    event_callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None
     execution_task: asyncio.Task | None = None
     cancelled: bool = False
 
@@ -112,6 +117,11 @@ class AgentLoop:
         max_pending_invocations: int = 256,
         queue_timeout: float | None = None,
         execution_timeout: float | None = None,
+        llm_timeout: float | None = None,
+        tool_timeout: float | None = None,
+        admission_callback: Callable[[ExecutionContext], Awaitable[bool]] | None = None,
+        readiness_callback: Callable[[ExecutionContext], Awaitable[bool]] | None = None,
+        event_callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
         max_subagent_tasks: int = 16,
         max_concurrent_subagents: int = 4,
         enable_consolidation: bool = True,
@@ -183,6 +193,11 @@ class AgentLoop:
         self.execution_timeout = (
             execution_timeout if execution_timeout and execution_timeout > 0 else None
         )
+        self.llm_timeout = llm_timeout if llm_timeout and llm_timeout > 0 else None
+        self.tool_timeout = tool_timeout if tool_timeout and tool_timeout > 0 else None
+        self.admission_callback = admission_callback
+        self.readiness_callback = readiness_callback
+        self.event_callback = event_callback
         self._execution_semaphore = asyncio.Semaphore(self.max_concurrent_invocations)
         self._scheduler_lock = asyncio.Lock()
         self._long_term_memory_lock = asyncio.Lock()
@@ -296,6 +311,7 @@ class AgentLoop:
             session_id=metadata.get("session_id") or metadata.get("sessionId"),
             session_seq=metadata.get("session_seq") or metadata.get("sessionSeq"),
             execution_owner=metadata.get("execution_owner") or metadata.get("executionOwner"),
+            max_iterations=metadata.get("max_iterations") or metadata.get("maxIterations"),
         )
 
     def _build_invocation_tools(self, context: ExecutionContext) -> ToolRegistry:
@@ -368,6 +384,8 @@ class AgentLoop:
         initial_messages: list[dict],
         on_progress: Callable[..., Awaitable[None]] | None = None,
         tools: ToolRegistry | None = None,
+        event_callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
+        max_iterations: int | None = None,
     ) -> ExecutionResult:
         """Run the agent iteration loop and classify its technical outcome."""
         messages = initial_messages
@@ -376,17 +394,36 @@ class AgentLoop:
         final_content = None
         tools_used: list[str] = []
 
-        while iteration < self.max_iterations:
+        iteration_limit = max_iterations if max_iterations is not None else self.max_iterations
+        while iteration < iteration_limit:
             iteration += 1
 
             try:
-                response = await self.provider.chat(
+                provider_call = self.provider.chat(
                     messages=messages,
                     tools=registry.get_definitions(),
                     model=self.model,
                     temperature=self.temperature,
                     max_tokens=self.max_tokens,
                     reasoning_effort=self.reasoning_effort,
+                )
+                if self.llm_timeout is None:
+                    response = await provider_call
+                else:
+                    response = await asyncio.wait_for(provider_call, self.llm_timeout)
+                await self._emit_event(event_callback, "llm", {
+                    "iteration": iteration,
+                    "toolCalls": [call.name for call in response.tool_calls],
+                    "finishReason": response.finish_reason,
+                })
+            except asyncio.TimeoutError:
+                await self._emit_event(event_callback, "llm_timeout", {
+                    "iteration": iteration, "timeoutSeconds": self.llm_timeout,
+                })
+                return ExecutionResult.failure(
+                    ExecutionOutcome.TIMEOUT,
+                    messages=messages, error_code="LLM_TIMEOUT",
+                    error_message="LLM call exceeded its timeout",
                 )
             except asyncio.CancelledError:
                 raise
@@ -429,7 +466,25 @@ class AgentLoop:
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
                     logger.info("Tool call: {}({})", tool_call.name, args_str[:200])
                     try:
-                        result = await registry.execute(tool_call.name, tool_call.arguments)
+                        tool_call_awaitable = registry.execute(tool_call.name, tool_call.arguments)
+                        if self.tool_timeout is None:
+                            result = await tool_call_awaitable
+                        else:
+                            result = await asyncio.wait_for(tool_call_awaitable, self.tool_timeout)
+                        await self._emit_event(event_callback, "tool", {
+                            "name": tool_call.name, "callId": tool_call.id,
+                        })
+                    except asyncio.TimeoutError:
+                        await self._emit_event(event_callback, "tool_timeout", {
+                            "name": tool_call.name, "callId": tool_call.id,
+                            "timeoutSeconds": self.tool_timeout,
+                        })
+                        return ExecutionResult.failure(
+                            ExecutionOutcome.TIMEOUT,
+                            messages=messages, tools_used=tools_used,
+                            error_code="TOOL_TIMEOUT",
+                            error_message=f"tool {tool_call.name} exceeded its timeout",
+                        )
                     except asyncio.CancelledError:
                         raise
                     except Exception as exc:
@@ -479,14 +534,14 @@ class AgentLoop:
                 final_content = clean
                 break
 
-        if final_content is None and iteration >= self.max_iterations:
-            logger.warning("Max iterations ({}) reached", self.max_iterations)
+        if final_content is None and iteration >= iteration_limit:
+            logger.warning("Max iterations ({}) reached", iteration_limit)
             return ExecutionResult.failure(
                 ExecutionOutcome.ITERATION_LIMIT,
                 messages=messages,
                 tools_used=tools_used,
                 error_code="ITERATION_LIMIT",
-                error_message=f"maximum iterations reached: {self.max_iterations}",
+                error_message=f"maximum iterations reached: {iteration_limit}",
             )
 
         return ExecutionResult(
@@ -495,6 +550,20 @@ class AgentLoop:
             messages=messages,
             tools_used=tools_used,
         )
+
+    async def _emit_event(
+        self,
+        callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> None:
+        callback = callback or self.event_callback
+        if callback is None:
+            return
+        try:
+            await callback(event_type, payload)
+        except Exception:
+            logger.exception("Invocation event callback failed")
 
     async def run(self) -> None:
         """Consume the native bus and submit each message to the shared scheduler."""
@@ -569,11 +638,13 @@ class AgentLoop:
         context: ExecutionContext | None = None,
         session_key: str | None = None,
         on_progress: Callable[..., Awaitable[None]] | None = None,
+        event_callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
+        max_iterations: int | None = None,
         publish: bool,
     ) -> OutboundMessage | None:
         """Single execution entrance used by bus, direct CLI, and future services."""
         context = context or self._resolve_execution_context(msg, session_key)
-        response = await self._submit_invocation(msg, context, on_progress)
+        response = await self._submit_invocation(msg, context, on_progress, event_callback)
         if publish:
             if response is not None:
                 await self.bus.publish_outbound(response)
@@ -591,6 +662,7 @@ class AgentLoop:
         msg: InboundMessage,
         context: ExecutionContext,
         on_progress: Callable[..., Awaitable[None]] | None,
+        event_callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     ) -> OutboundMessage | None:
         """Enqueue work without consuming the Worker semaphore while waiting."""
         async with self._scheduler_lock:
@@ -607,6 +679,7 @@ class AgentLoop:
                 future=future,
                 accepted_at=time.monotonic(),
                 on_progress=on_progress,
+                event_callback=event_callback,
             )
             state = self._session_states.setdefault(context.session_key, _SessionState())
             state.queue.append(item)
@@ -665,6 +738,16 @@ class AgentLoop:
                 item.execution_task = asyncio.create_task(self._run_scheduled(item))
                 try:
                     result = await item.execution_task
+                except InvocationAdmissionDeferredError:
+                    # Durable ordering can lag Redis delivery after a restart.
+                    # Put the head back without consuming pending capacity.
+                    async with self._scheduler_lock:
+                        state = self._session_states.get(session_key)
+                        if state is not None:
+                            state.queue.appendleft(item)
+                            state.running = None
+                    await asyncio.sleep(0.02)
+                    continue
                 except asyncio.CancelledError:
                     if not item.future.done():
                         item.future.cancel()
@@ -683,7 +766,8 @@ class AgentLoop:
                         state = self._session_states.get(session_key)
                         if state is not None:
                             state.running = None
-                        self._pending_invocations -= 1
+                        if state is not None and item not in state.queue:
+                            self._pending_invocations -= 1
         finally:
             # A normal drain exits through the branch above. This fallback keeps
             # cancellation/shutdown from retaining an empty Session state.
@@ -710,6 +794,12 @@ class AgentLoop:
 
         acquired = False
         try:
+            if self.readiness_callback is not None:
+                ready = await self.readiness_callback(item.context)
+                if not ready:
+                    raise InvocationAdmissionDeferredError(
+                        "durable Session predecessor is not terminal"
+                    )
             if remaining_queue is None:
                 await self._execution_semaphore.acquire()
             else:
@@ -723,12 +813,17 @@ class AgentLoop:
 
             token = set_execution_context(item.context)
             try:
+                if self.admission_callback is not None:
+                    admitted = await self.admission_callback(item.context)
+                    if not admitted:
+                        raise InvocationAdmissionDeferredError("durable Session predecessor is not terminal")
                 await self._connect_mcp()
                 process = self._process_message(
                     item.message,
                     session_key=item.context.session_key,
                     on_progress=item.on_progress,
                     execution_context=item.context,
+                    event_callback=item.event_callback,
                 )
                 if self.execution_timeout is None:
                     return await process
@@ -742,6 +837,8 @@ class AgentLoop:
                 reset_execution_context(token)
         except asyncio.CancelledError:
             await self._finish_durable_interruption(item.context, ExecutionOutcome.CANCELLED, "invocation cancelled")
+            raise
+        except InvocationAdmissionDeferredError:
             raise
         except InvocationQueueTimeoutError as exc:
             await self._finish_durable_interruption(item.context, ExecutionOutcome.TIMEOUT, str(exc))
@@ -847,12 +944,15 @@ class AgentLoop:
         session_key: str | None = None,
         on_progress: Callable[[str], Awaitable[None]] | None = None,
         execution_context: ExecutionContext | None = None,
+        event_callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     ) -> OutboundMessage | None:
         """Process one message with an invocation-local context and tool set."""
         context = execution_context or self._resolve_execution_context(msg, session_key)
         token = set_execution_context(context)
         try:
-            return await self._process_message_with_context(msg, context, on_progress)
+            return await self._process_message_with_context(
+                msg, context, on_progress, event_callback, context.max_iterations,
+            )
         finally:
             reset_execution_context(token)
 
@@ -861,9 +961,13 @@ class AgentLoop:
         msg: InboundMessage,
         context: ExecutionContext,
         on_progress: Callable[[str], Awaitable[None]] | None,
+        event_callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
+        max_iterations: int | None = None,
     ) -> OutboundMessage | None:
         """Run the complete read/build/LLM-tool/save range for one Session head."""
         tools = self._build_invocation_tools(context)
+        if context.max_iterations is not None:
+            max_iterations = context.max_iterations
 
         async def _commit(result: ExecutionResult, all_messages: list[dict], skip: int) -> None:
             if self._durable_memory:
@@ -888,7 +992,10 @@ class AgentLoop:
                 history=history, current_message=msg.content,
                 channel=context.channel, chat_id=context.chat_id,
             )
-            result = await self._run_agent_loop(messages, tools=tools)
+            result = await self._run_agent_loop(
+                messages, tools=tools, event_callback=event_callback,
+                max_iterations=max_iterations,
+            )
             await _commit(result, result.messages, 1 + len(history))
             return OutboundMessage(
                 channel=context.channel,
@@ -983,7 +1090,7 @@ class AgentLoop:
 
         result = await self._run_agent_loop(
             initial_messages, on_progress=on_progress or _bus_progress,
-            tools=tools,
+            tools=tools, event_callback=event_callback, max_iterations=max_iterations,
         )
 
         await _commit(result, result.messages, 1 + len(history))
@@ -991,7 +1098,7 @@ class AgentLoop:
         if final_content is None:
             if result.outcome is ExecutionOutcome.ITERATION_LIMIT:
                 final_content = (
-                    f"I reached the maximum number of tool call iterations ({self.max_iterations}) "
+                    f"I reached the maximum number of tool call iterations ({max_iterations or self.max_iterations}) "
                     "without completing the task. You can try breaking the task into smaller steps."
                 )
             elif result.outcome is not ExecutionOutcome.PROVIDER_ERROR:
@@ -1047,20 +1154,29 @@ class AgentLoop:
         chat_id: str = "direct",
         on_progress: Callable[[str], Awaitable[None]] | None = None,
         metadata: dict[str, Any] | None = None,
+        event_callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
+        max_iterations: int | None = None,
+        media: list[str] | None = None,
     ) -> str:
         """Process direct/cron work through the same Session scheduler as the bus."""
+        message_metadata = dict(metadata or {})
+        if max_iterations is not None:
+            message_metadata["maxIterations"] = max_iterations
         msg = InboundMessage(
             channel=channel,
             sender_id="user",
             chat_id=chat_id,
             content=content,
-            metadata=metadata or {},
+            metadata=message_metadata,
+            media=media or [],
         )
         context = self._resolve_execution_context(msg, session_key)
         response = await self._execute_entry(
             msg,
             context=context,
             on_progress=on_progress,
+            event_callback=event_callback,
+            max_iterations=max_iterations,
             publish=False,
         )
         return response.content if response else ""

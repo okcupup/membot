@@ -32,6 +32,10 @@ class IdempotencyConflictError(ValueError):
     """The same idempotency key was used for a different request payload."""
 
 
+class CapacityError(RuntimeError):
+    """The durable unfinished-invocation limit has been reached."""
+
+
 @dataclass(slots=True)
 class SessionSnapshot:
     owner_id: str
@@ -62,6 +66,7 @@ class Invocation:
     error_message: str | None
     idempotency_key: str | None
     payload_hash: str
+    payload: dict[str, Any]
 
 
 def payload_hash(payload: dict[str, Any]) -> str:
@@ -109,6 +114,7 @@ def _row_to_invocation(row: Any) -> Invocation:
         error_message=row["error_message"],
         idempotency_key=row["idempotency_key"],
         payload_hash=row["payload_hash"],
+        payload=_decode_json(row["payload"]),
     )
 
 
@@ -181,6 +187,7 @@ class PostgresRepository:
         invocation_id: str | None = None,
         queue_timeout_seconds: float | None = None,
         execution_timeout_seconds: float | None = None,
+        max_unfinished: int | None = None,
     ) -> tuple[Invocation, bool]:
         """Atomically allocate a Session sequence and create invocation+Outbox."""
 
@@ -202,6 +209,21 @@ class PostgresRepository:
                         if existing["payload_hash"] != digest:
                             raise IdempotencyConflictError("idempotency key is already bound to another request")
                         return _row_to_invocation(existing), True
+
+                if max_unfinished is not None:
+                    if max_unfinished < 1:
+                        raise ValueError("max_unfinished must be positive")
+                    # Serialize the count across API instances.  The lock is
+                    # held only for this short admission transaction.
+                    await connection.execute("SELECT pg_advisory_xact_lock($1)", 843199322540218)
+                    unfinished = await connection.fetchval(
+                        "SELECT count(*) FROM invocations "
+                        "WHERE status IN ('QUEUED','RUNNING')"
+                    )
+                    if unfinished >= max_unfinished:
+                        raise CapacityError(
+                            f"unfinished invocation capacity is full ({max_unfinished})"
+                        )
 
                 await connection.execute(
                     """
@@ -246,6 +268,33 @@ class PostgresRepository:
                 )
                 await _insert_event(connection, row, "accepted", {"status": InvocationStatus.QUEUED.value, "sessionSeq": seq})
                 return _row_to_invocation(row), False
+
+    async def create_session(
+        self, *, owner_id: str, session_id: str, session_key: str,
+    ) -> SessionSnapshot:
+        """Create or return an owner-scoped Session without local caching."""
+        async with self.pool.acquire() as connection:
+            async with connection.transaction():
+                await connection.execute(
+                    """
+                    INSERT INTO sessions(owner_id, session_id, session_key)
+                    VALUES ($1,$2,$3)
+                    ON CONFLICT (owner_id, session_id) DO NOTHING
+                    """, owner_id, session_id, session_key,
+                )
+                row = await connection.fetchrow(
+                    "SELECT * FROM sessions WHERE owner_id=$1 AND session_id=$2",
+                    owner_id, session_id,
+                )
+                if row is None:
+                    raise KeyError(session_id)
+                if row["session_key"] != session_key:
+                    raise ValueError("session_id is already bound to another session_key")
+                return SessionSnapshot(
+                    owner_id=owner_id, session_id=row["session_id"],
+                    session_key=row["session_key"], messages=[],
+                    next_session_seq=row["next_session_seq"],
+                )
 
     async def get_invocation(self, invocation_id: str) -> Invocation | None:
         async with self.pool.acquire() as connection:
@@ -335,7 +384,12 @@ class PostgresRepository:
     ) -> Invocation:
         """Commit messages and terminal result in one short transaction."""
 
-        status = InvocationStatus.SUCCEEDED.value if result.technical_success else InvocationStatus.FAILED.value
+        if result.technical_success:
+            status = InvocationStatus.SUCCEEDED.value
+        elif result.outcome is ExecutionOutcome.TIMEOUT:
+            status = InvocationStatus.TIMEOUT.value
+        else:
+            status = InvocationStatus.FAILED.value
         result_json = json.dumps(_result_payload(result), ensure_ascii=False)
         error_message = redact_text(result.error_message)
         async with self.pool.acquire() as connection:
@@ -404,7 +458,7 @@ class PostgresRepository:
                     },
                 )
                 if result.technical_success:
-                    await _insert_event(connection, updated, "final", {"content": result.final_content or ""})
+                        await _insert_event(connection, updated, "FINAL", {"content": result.final_content or ""})
                 return _row_to_invocation(updated)
 
     async def archive_and_finish_new(
@@ -490,7 +544,7 @@ class PostgresRepository:
                     connection, updated,
                     "result", {"outcome": "FINAL", "status": "SUCCEEDED"},
                 )
-                await _insert_event(connection, updated, "final", {"content": result.final_content})
+                await _insert_event(connection, updated, "FINAL", {"content": result.final_content})
                 return _row_to_invocation(updated)
 
     async def finish_interrupted(
@@ -606,6 +660,170 @@ class PostgresRepository:
                 "FROM invocation_events WHERE invocation_id=$1 ORDER BY event_id", invocation_id,
             )
             return [{**dict(row), "payload": _decode_json(row["payload"])} for row in rows]
+
+    async def append_event(self, invocation_id: str, event_type: str, payload: dict[str, Any]) -> None:
+        """Append a diagnostic event using the invocation's original IDs."""
+        async with self.pool.acquire() as connection:
+            row = await connection.fetchrow(
+                "SELECT invocation_id, owner_id, session_id, request_id, trace_id "
+                "FROM invocations WHERE invocation_id=$1", invocation_id,
+            )
+            if row is None:
+                raise KeyError(invocation_id)
+            await _insert_event(connection, row, event_type, payload)
+
+    async def expire_queued(self, *, limit: int = 100) -> int:
+        """Move queue-expired work to TIMEOUT and leave a diagnostic event."""
+        async with self.pool.acquire() as connection:
+            async with connection.transaction():
+                rows = await connection.fetch(
+                    """
+                    SELECT * FROM invocations
+                    WHERE status='QUEUED' AND queue_timeout_seconds IS NOT NULL
+                      AND submitted_at + queue_timeout_seconds * interval '1 second' < now()
+                    ORDER BY submitted_at FOR UPDATE SKIP LOCKED LIMIT $1
+                    """, limit,
+                )
+                for row in rows:
+                    updated = await connection.fetchrow(
+                        """UPDATE invocations SET status='TIMEOUT', finished_at=now(),
+                           error_code='QUEUE_TIMEOUT', error_message='invocation expired in queue'
+                           WHERE invocation_id=$1 AND status='QUEUED' RETURNING *""",
+                        row["invocation_id"],
+                    )
+                    if updated:
+                        await _insert_event(
+                            connection, updated, "result",
+                            {"outcome": "TIMEOUT", "status": "TIMEOUT", "errorCode": "QUEUE_TIMEOUT"},
+                        )
+                        await connection.execute(
+                            "UPDATE outbox SET published_at=COALESCE(published_at, now()) WHERE invocation_id=$1",
+                            row["invocation_id"],
+                        )
+                return len(rows)
+
+    async def fail_running_worker_lost(self, execution_owner: str, *, limit: int = 1000) -> int:
+        """Fence RUNNING work owned by a lost Worker; never touch terminal rows."""
+        async with self.pool.acquire() as connection:
+            async with connection.transaction():
+                rows = await connection.fetch(
+                    """SELECT * FROM invocations WHERE status='RUNNING' AND execution_owner=$1
+                       ORDER BY started_at FOR UPDATE SKIP LOCKED LIMIT $2""",
+                    execution_owner, limit,
+                )
+                for row in rows:
+                    updated = await connection.fetchrow(
+                        """UPDATE invocations SET status='FAILED', finished_at=now(),
+                           execution_lease_until=NULL, error_code='WORKER_LOST',
+                           error_message='Worker execution process stopped'
+                           WHERE invocation_id=$1 AND status='RUNNING' RETURNING *""",
+                        row["invocation_id"],
+                    )
+                    if updated:
+                        await _insert_event(
+                            connection, updated, "worker_lost",
+                            {"status": "FAILED", "errorCode": "WORKER_LOST"},
+                        )
+                return len(rows)
+
+    async def fail_all_running_worker_lost(self, *, limit: int = 1000) -> int:
+        """Fence every RUNNING claim during single-Worker startup recovery."""
+        async with self.pool.acquire() as connection:
+            async with connection.transaction():
+                rows = await connection.fetch(
+                    """SELECT * FROM invocations WHERE status='RUNNING'
+                       ORDER BY started_at FOR UPDATE SKIP LOCKED LIMIT $1""", limit,
+                )
+                for row in rows:
+                    updated = await connection.fetchrow(
+                        """UPDATE invocations SET status='FAILED', finished_at=now(),
+                           execution_lease_until=NULL, error_code='WORKER_LOST',
+                           error_message='Worker execution process stopped'
+                           WHERE invocation_id=$1 AND status='RUNNING' RETURNING *""",
+                        row["invocation_id"],
+                    )
+                    if updated:
+                        await _insert_event(
+                            connection, updated, "worker_lost",
+                            {"status": "FAILED", "errorCode": "WORKER_LOST"},
+                        )
+                return len(rows)
+
+    async def reclassify_worker_cancellations(self, execution_owner: str, *, limit: int = 1000) -> int:
+        """Turn cancellation caused by Worker shutdown into WORKER_LOST."""
+        async with self.pool.acquire() as connection:
+            async with connection.transaction():
+                rows = await connection.fetch(
+                    """SELECT * FROM invocations
+                       WHERE status='FAILED' AND execution_owner=$1
+                         AND error_code='CANCELLED'
+                       ORDER BY finished_at FOR UPDATE SKIP LOCKED LIMIT $2""",
+                    execution_owner, limit,
+                )
+                for row in rows:
+                    updated = await connection.fetchrow(
+                        """UPDATE invocations SET error_code='WORKER_LOST',
+                           error_message='Worker execution process stopped'
+                           WHERE invocation_id=$1 AND status='FAILED'
+                             AND error_code='CANCELLED' RETURNING *""",
+                        row["invocation_id"],
+                    )
+                    if updated:
+                        await _insert_event(
+                            connection, updated, "worker_lost",
+                            {"status": "FAILED", "errorCode": "WORKER_LOST"},
+                        )
+                return len(rows)
+
+    async def unfinished_count(self) -> int:
+        async with self.pool.acquire() as connection:
+            return int(await connection.fetchval(
+                "SELECT count(*) FROM invocations WHERE status IN ('QUEUED','RUNNING')"
+            ))
+
+    async def session_predecessor_ready(self, invocation_id: str) -> bool:
+        """Check ordered eligibility without claiming or consuming execution quota."""
+        async with self.pool.acquire() as connection:
+            return bool(await connection.fetchval(
+                """
+                SELECT NOT EXISTS (
+                  SELECT 1
+                  FROM invocations current
+                  JOIN invocations earlier
+                    ON earlier.owner_id=current.owner_id
+                   AND earlier.session_id=current.session_id
+                   AND earlier.session_seq < current.session_seq
+                   AND earlier.status IN ('QUEUED','RUNNING')
+                  WHERE current.invocation_id=$1 AND current.status='QUEUED'
+                )
+                """, invocation_id,
+            ))
+
+    async def unfinished_invocations(self, *, limit: int = 1000) -> list[Invocation]:
+        async with self.pool.acquire() as connection:
+            rows = await connection.fetch(
+                """SELECT * FROM invocations WHERE status='QUEUED'
+                   ORDER BY session_id, session_seq LIMIT $1""", limit,
+            )
+            return [_row_to_invocation(row) for row in rows]
+
+    async def queued_envelopes(self, *, limit: int = 1000) -> list[dict[str, Any]]:
+        """Return durable QUEUED envelopes for Redis-loss reconciliation."""
+        async with self.pool.acquire() as connection:
+            rows = await connection.fetch(
+                """SELECT invocation_id, owner_id, session_id, session_seq,
+                          request_id, trace_id
+                   FROM invocations WHERE status='QUEUED'
+                   ORDER BY session_id, session_seq LIMIT $1""", limit,
+            )
+            return [
+                {
+                    "invocationId": row["invocation_id"], "ownerId": row["owner_id"],
+                    "sessionId": row["session_id"], "sessionSeq": row["session_seq"],
+                    "requestId": row["request_id"], "traceId": row["trace_id"],
+                }
+                for row in rows
+            ]
 
     async def pending_outbox(self, *, limit: int = 100) -> list[dict[str, Any]]:
         async with self.pool.acquire() as connection:
