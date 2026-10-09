@@ -26,6 +26,14 @@ async def connect(config):
                                             command_timeout=config.db_timeout_seconds)
 
 
+async def close_repository(repository, timeout):
+    try:
+        await asyncio.wait_for(repository.close(), timeout)
+    except asyncio.TimeoutError:
+        repository.pool.terminate()
+        logger.error("Database pool close deadline expired")
+
+
 async def serve_api(config: ServiceConfig) -> None:
     from aiohttp import web
 
@@ -59,7 +67,7 @@ async def serve_api(config: ServiceConfig) -> None:
             if runner:
                 await asyncio.wait_for(runner.cleanup(), config.cleanup_seconds)
         finally:
-            await asyncio.wait_for(repository.close(), config.cleanup_seconds)
+            await close_repository(repository, config.cleanup_seconds)
 
 
 async def serve_worker(config: ServiceConfig) -> None:
@@ -68,6 +76,8 @@ async def serve_worker(config: ServiceConfig) -> None:
 
     repository = await connect(config)
     transport = None
+    worker = None
+    running = False
     try:
         await repository.assert_schema()
         transport = await RedisStreamTransport.connect(
@@ -85,14 +95,18 @@ async def serve_worker(config: ServiceConfig) -> None:
         await worker.start()
         if stopped.is_set():
             worker.request_drain()
-        try:
-            await worker.run()
-        finally:
-            await asyncio.wait_for(worker.stop(worker_lost=worker._lost), config.cleanup_seconds)
+        running = True
+        await worker.run()  # run owns its one bounded drain/cleanup budget
     finally:
-        if transport:
-            await transport.close()
-        await asyncio.wait_for(repository.close(), config.cleanup_seconds)
+        try:
+            if worker and not running:
+                await asyncio.wait_for(worker.stop(worker_lost=True), config.cleanup_seconds)
+        finally:
+            try:
+                if transport:
+                    await asyncio.wait_for(transport.close(), config.db_timeout_seconds)
+            finally:
+                await close_repository(repository, config.cleanup_seconds)
 
 
 async def migrate(config: ServiceConfig) -> None:

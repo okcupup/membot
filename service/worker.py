@@ -483,7 +483,9 @@ class AsyncWorker:
         try:
             while self._running and not self._draining:
                 await self._consume_once()
-        except (asyncio.CancelledError, WorkerStoppedError):
+        except BaseException:
+            if not self._draining:
+                self._lost = True
             raise
         finally:
             try:
