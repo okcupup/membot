@@ -1,10 +1,11 @@
 # Project Status
 
-Date: 2026-10-08
+Date: 2026-10-10 (Asia/Shanghai)
 
-M0 through M4 are complete on the feature branch. M3 API/Queue/Worker execution
-and M4 Invocation diagnostics are implemented; deployment topology and Nginx
-remain planned for M5.
+M0 through M5 are complete locally. M5 now supplies and verifies the single-host
+Compose deployment. The local TLS/fake-provider verification does not represent
+a public cloud HTTPS deployment or real-model evaluation. See
+`docs/DEPLOYMENT.md` for the runnable configuration and commands.
 
 The reviewed starting commit was:
 
@@ -202,14 +203,157 @@ multi-round LLM/Tool timelines, provider and tool errors, LLM/Tool/execution
 timeouts, iteration exhaustion, queue expiry, ownership loss, duplicate ACK,
 redaction and retention, two API processes, migration backfill, safe replay,
 candidate export, and stdout JSON logs. Ruff, bytecode compilation, and
-`git diff --check` also passed. Docker is unavailable in this environment, so
-M5 deployment checks remain future work; no performance number is claimed.
+`git diff --check` also passed. Docker was unavailable during M4; M5 installed
+isolated tooling for the later deployment checks below. No performance number
+is claimed.
+
+M5 implementation and decisions:
+
+- Installed `membot-service api|worker|migrate|check-config` entrypoints run
+  directly as the container process. Each API has one aiohttp process; the
+  Worker has one asyncio execution process, a singleton PostgreSQL advisory
+  lock, and bounded main invocation/prefetch budgets. Healthcheck commands may
+  start short probe processes; they are not execution workers.
+- Fixed wheel inclusion of the root implementation packages and migration,
+  template and skill resources. Source-tree package extension is conditional,
+  so a clean installed wheel no longer depends on a sibling checkout. Added
+  exact transitive/build dependency locks and pinned official image manifests.
+- Compose includes Nginx/api1/api2/Redis/PostgreSQL/Worker and one-shot
+  migration. Only Nginx publishes ports. Named volumes persist DB, Redis AOF,
+  and tool workspace; application containers are nonroot/read-only with
+  tmpfs, resource/PID limits, restart policies and rotated JSON logs.
+- Nginx terminates TLS, uses least_conn and passive max_fails/fail_timeout,
+  request limits, bounded connect/read/write timeouts, upstream zones and
+  Docker DNS resolve. POST retries do not enable non_idempotent. Client retries
+  require identical payload and Idempotency-Key. Explicit network IPAM enables
+  an address-change drill without restarting Nginx.
+- API live is process responsiveness. Ready checks DB/schema, durable capacity
+  and drain state. Redis availability, queue depth, unpublished Outbox and
+  fenced Worker heartbeat are separate diagnostics; admission can remain ready
+  while Worker/Redis are absent. Docker healthcheck does not actively remove
+  Nginx upstreams or automatically restart an unhealthy container.
+- API SIGTERM rejects new mutations and completes admitted short transactions.
+  Worker stops receiving/starting work, renews its current ownership during a
+  20-second drain, then cancels remaining executions, closes resources and
+  records FAILED/WORKER_DRAIN_TIMEOUT. Unclaimed tasks remain QUEUED. Kill
+  recovery records FAILED/WORKER_LOST; uncertain write tools are not replayed.
+  API/Worker stop grace is 40/45 seconds and the application cleanup is bounded.
+- Shell cancellation kills the POSIX process group, including descendants.
+  MCP shared initialization is cancelled and cleaned up at process shutdown;
+  Provider clients expose async close. Service env does not enable MCP servers,
+  consolidation, spawn, cron or Agent heartbeat background tasks.
+- Makefile operations validate configuration, start the stack, check health,
+  show doctor diagnostics, smoke, drill API/Worker failure, test rate limits,
+  restart persistence, backup and restore. Backup and its manifest share an
+  exported PostgreSQL snapshot; restore validation uses a disposable database,
+  never the live DB. `.env` is parsed as data, not shell code.
+
+M5 environment distinctions:
+
+- Ordinary sandbox runs cannot resolve dependencies or connect to loopback;
+  these failures/skips are environmental. The elevated full regression used
+  real local PostgreSQL 13.23/Redis and a separate `membot_m5_20261009` database.
+- Docker Engine 27.5.1 ran in an isolated `/tmp` data/socket directory; the
+  host's existing Nginx was untouched. GitHub Compose binary download stalled,
+  and the official EL9 package required newer glibc. Compose 2.32.4 and Buildx
+  0.20.0 were therefore run in an isolated compatible Python container.
+- Docker Hub timed out. Verified fixed official images were pulled via
+  `docker.m.daocloud.io/library`, with the actual manifest digests recorded in
+  `deploy/images.env`. Container PyPI download later timed out on a large wheel;
+  the successful build used the same fixed requirements from a downloaded
+  wheelhouse with MEMBOT_BUILD_OFFLINE=1. This fallback is documented and tested.
+- The first full run found an obsolete test assertion of two migrations; it
+  now checks the migration directory count (three). The first address-change
+  drill found that Docker auto-subnet networks reject a requested IP; an
+  explicit configurable subnet corrected the drill. Both were fixed before
+  acceptance; neither failure is counted as a pass.
+
+M5 actual regression commands and results:
+
+```bash
+LITELLM_LOCAL_MODEL_COST_MAP=True \
+DATABASE_URL=postgresql://membot:membot@127.0.0.1:55432/membot_m5_20261009 \
+REDIS_URL=redis://127.0.0.1:56379/0 \
+./.venv/bin/python -m pytest -q -rs
+# 89 passed in 30.97s; no skipped integration cases
+
+./.venv/bin/python scripts/wheel_check.py
+# built wheel; fresh non-editable install; site-packages imports, CLI and migration resources passed
+# python -m pip check: No broken requirements found
+
+./.venv/bin/ruff check agent/loop.py agent/persistence service scripts \
+  tests/test_service_lifecycle.py tests/test_deploy_client.py \
+  tests/test_worker.py tests/test_diagnostics_integration.py
+# All checks passed
+./.venv/bin/python -m compileall -q agent bus channels cli config cron heartbeat \
+  providers session utils membot service tests scripts
+git diff --check
+# passed
+```
+
+The exact local deployment command prefix was:
+
+```bash
+export DOCKER_HOST=unix:///tmp/membot-m5-docker.sock
+export DOCKER_BIN=/tmp/membot-docker-tools/docker/docker
+export COMPOSE_BIN=/tmp/membot-compose
+./.venv/bin/python scripts/deploy.py --env-file .env.m5-local init-local
+make deploy-config ENV_FILE=.env.m5-local
+make deploy-up ENV_FILE=.env.m5-local
+make deploy-doctor ENV_FILE=.env.m5-local
+make deploy-smoke ENV_FILE=.env.m5-local
+make deploy-worker-drill ENV_FILE=.env.m5-local
+make deploy-restart-check ENV_FILE=.env.m5-local
+make deploy-api-drill ENV_FILE=.env.m5-local
+make deploy-rate-check ENV_FILE=.env.m5-local
+make deploy-backup ENV_FILE=.env.m5-local
+make deploy-restore-check ENV_FILE=.env.m5-local \
+  BACKUP=deploy/backups/membot-1791560902697833714.dump
+```
+
+Real results (local fixture, 2026-10-09 UTC; phase finished on 2026-10-10 CST):
+
+- Image built and imported the installed AgentLoop/CLI/service/migrations;
+  pip check passed. The migration exited 0 and all six running services became
+  healthy. Inspection confirmed only Nginx host-port mappings and one main
+  Python process in each API/Worker container.
+- HTTPS smoke verified localhost certificate/hostname, 202 + Location, same
+  key/body returning the same Invocation, different body 409, Final SUCCEEDED
+  and 15 diagnostic events. `model=not_probed` in doctor is deliberate.
+- API1 Kill produced one 504 among 30 sampled requests; the subsequent 29
+  responses came from API2. Existing task succeeded, duplicate submission kept
+  its ID. API1 changed from 172.29.55.4 to 172.29.55.8; both instance IDs were
+  observed after recovery, with the Nginx container unchanged. This is an
+  observed error window, not an availability/performance promise.
+- Worker Kill marked the original RUNNING Invocation FAILED/WORKER_LOST;
+  accepted QUEUED work resumed. Normal SIGTERM allowed the running fixture to
+  finish SUCCEEDED. Drain deadline yielded FAILED/WORKER_DRAIN_TIMEOUT; its
+  same-Session successor stayed QUEUED and subsequently SUCCEEDED.
+- Whole-stack down/up kept volumes and the queried terminal result identical;
+  the next turn at session_seq=2 returned `history_turns=1`.
+- Rate check observed 62 HTTP 404 and 138 HTTP 429 responses; health/live was
+  still available. These are test outcomes, not benchmark measurements.
+- Consistent backup restored into a random isolated database and matched all
+  six table count/content fingerprints: sessions=8, messages=14,
+  invocations=10, archives=0, events=141, outbox=10. The backup SHA256 was
+  checked; the isolated database was dropped and live data was unchanged.
+
+Evidence reports and backup files remain local in ignored deploy/reports and
+deploy/backups. Secrets, local env and certificates are ignored. Development
+commits are 6d28811 (lifecycle), 45feb6c (wheel/image/Compose), and 6ca4c93
+(scripts/drills/fixes); the fourth commit closes documentation. The phase is
+merged to local main with --no-ff after acceptance, without a remote push.
 
 Remaining risks:
 
-1. The wheel still omits root implementation packages; fix packaging before
-   deployment work.
-2. Docker Compose/Nginx/HTTPS and production health/shutdown smoke tests remain
-   M5.
-3. M6 still needs the 32-case regression/evaluation corpus and real-provider
-   evaluation; M4 only exports reviewed candidates.
+1. No target cloud host, domain/DNS, firewall/access scope or public certificate
+   was supplied. Local self-signed HTTPS is verified; public HTTPS deployment
+   and real-provider smoke are unverified. Runnable production configuration is
+   ready for review in docs/DEPLOYMENT.md.
+2. M6 still needs the 32-case regression/evaluation corpus, baselines and
+   explicit real-model assessment. Existing tests use deterministic providers.
+3. Load/memory capacity and broader Redis/DB failure drills remain M7/M8. M5
+   verifies resource configuration and controlled failures, not host capacity.
+4. The single-owner API has no user login/auth layer. External exposure needs
+   the intended caller access policy; tool workspace files require their own
+   backup alongside PostgreSQL if real write tools are used.

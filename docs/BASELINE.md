@@ -183,9 +183,49 @@ failure/timeout nodes, read-only export, safe replay isolation, and candidate
 cases with unconfirmed expectations. PostgreSQL 13.23 was queried directly;
 Docker was unavailable, so deployment behavior is not part of this baseline.
 
-## Next-phase risks carried forward
+## M5 deployment baseline
 
-1. Move service state, context, and events to PostgreSQL and add a transactional
-   Outbox before returning `202`.
-2. Add Redis at-least-once transport, Worker leases, and recovery semantics.
-3. Fix wheel inclusion and repeat the clean import check before deployment work.
+The M5 deployment branch fixed the wheel packaging blocker. A wheel built from
+the source checkout was installed into a fresh non-editable Python 3.11
+environment; `pip check` passed and imports resolved from `site-packages` for
+`membot.agent.loop`, `membot.cli.commands`, `membot.service.entrypoints`, and
+the packaged migration files. No source checkout was on `PYTHONPATH`.
+
+The isolated Docker daemon used Docker Engine 27.5.1 and Compose 2.32.4. The
+verified manifest digests are recorded in `deploy/images.env`; local pulls used
+the explicitly recorded public cache transport because Docker Hub timed out on
+this host. The final image was built from the pinned Python base with the
+locked runtime/build requirements and `python -m pip check` passed in-image.
+
+The deterministic local deployment used a self-signed seven-day localhost
+certificate and the explicit fake Provider. It started PostgreSQL 16.8,
+Redis 7.4.2, the migration service, two API containers, one Worker, and Nginx.
+Only `127.0.0.1:8088` and `127.0.0.1:8443` were published by Nginx. Smoke
+accepted `202`, verified Location and stable idempotency, observed a successful
+Final with 15 events, and queried it by one invocation ID.
+
+Real local deployment evidence on 2026-10-09 UTC (phase crossed into 2026-10-10 CST):
+
+```text
+LITELLM_LOCAL_MODEL_COST_MAP=True DATABASE_URL=...membot_m5_20261009 REDIS_URL=... ./.venv/bin/python -m pytest -q -rs
+89 passed in 30.97s
+./.venv/bin/python scripts/wheel_check.py
+fresh non-editable install: passed; pip check: no broken requirements
+make deploy-smoke ENV_FILE=.env.m5-local
+HTTP 202; duplicate invocation ID stable; changed payload HTTP 409; HTTPS verified; eventCount=15
+make deploy-api-drill ENV_FILE=.env.m5-local
+oldIP=172.29.55.4 newIP=172.29.55.8; nginxUnchanged=true; one observed passive 504; API2 served during failure
+make deploy-worker-drill ENV_FILE=.env.m5-local
+WORKER_LOST recovery: passed; graceful drain: SUCCEEDED; WORKER_DRAIN_TIMEOUT: FAILED; successor stayed QUEUED then SUCCEEDED
+make deploy-restart-check ENV_FILE=.env.m5-local
+terminal row persisted; next turn returned history_turns=1
+make deploy-rate-check ENV_FILE=.env.m5-local
+138 HTTP 429 responses; health/live remained available
+make deploy-backup / make deploy-restore-check ENV_FILE=.env.m5-local
+random isolated database restored; six table fingerprints matched; live database untouched
+```
+
+The local deployment used no real model credentials and makes no public
+availability claim. Cloud validation is still missing a target host, DNS,
+firewall policy, and publicly trusted certificate. A production operator must
+provide those and run smoke with a real Provider before publishing externally.

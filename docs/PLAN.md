@@ -118,11 +118,24 @@ API instances and one Worker in the first topology.
 Acceptance:
 
 ```bash
-docker compose -f deploy/docker-compose.yml config
-docker compose -f deploy/docker-compose.yml up -d --build
-./.venv/bin/python scripts/deploy_smoke.py --assert-ready --assert-https
-docker compose -f deploy/docker-compose.yml down
+make wheel-check
+make deploy-config ENV_FILE=.env.local
+make deploy-up ENV_FILE=.env.local
+make deploy-smoke ENV_FILE=.env.local
+make deploy-api-drill ENV_FILE=.env.local
+make deploy-worker-drill ENV_FILE=.env.local
+make deploy-restart-check ENV_FILE=.env.local
+make deploy-backup ENV_FILE=.env.local
+make deploy-restore-check ENV_FILE=.env.local BACKUP=deploy/backups/<timestamp>.dump
+make deploy-down ENV_FILE=.env.local
 ```
+
+`deploy-init-local` creates a deterministic fake-provider deployment with a
+self-signed localhost certificate. It proves the local TLS and production code
+path; it is not evidence of a public DNS, cloud host, or publicly trusted
+certificate. The drills record API `instanceId`, passive Nginx failover, stable
+POST idempotency, Worker loss/drain recovery, and persistent PostgreSQL state.
+The compose healthchecks are diagnostic and do not actively remove upstreams.
 
 ## M6: regression and evaluation
 

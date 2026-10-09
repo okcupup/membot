@@ -62,7 +62,7 @@ QUEUED --claim--> RUNNING --final result--> SUCCEEDED
    |                 |   +--deadline------> TIMEOUT
    |                 +------error---------> FAILED
    +--queue deadline----------------------> TIMEOUT
-   +--worker interruption-----------------> QUEUED or FAILED (policy-defined)
+RUNNING --worker interruption------------> FAILED (WORKER_LOST)
 ```
 
 The Worker uses an atomic claim/lease so redelivery cannot run the same
@@ -119,16 +119,18 @@ delivery guarantee to exactly-once.
 ## Persistence and recovery
 
 PostgreSQL stores sessions, invocations, invocation context, state transitions,
-Outbox rows, and diagnostic events. The context snapshot used by an invocation
-is immutable after acceptance; later Session turns do not rewrite it.
+Outbox rows, and diagnostic events. The acceptance payload is immutable. The
+effective history/context snapshot is recorded at execution, after earlier
+Session turns become terminal; subsequent turns do not rewrite that snapshot.
 
 The API acceptance transaction inserts the invocation and Outbox row together.
 M2 implements the transaction in `PostgresRepository.accept_invocation`; the
-relay retries pending Outbox rows until Redis accepts the envelope. Redis
-transport is bounded and uses a ready list plus an unacknowledged processing
-list. Delivery is at least once: publication can precede a crash before the
-Outbox row is marked, and expired Worker leases are returned to `QUEUED` with
-the Outbox made publishable again.
+relay retries pending Outbox rows until Redis accepts the envelope. The service
+uses a bounded Redis Stream with consumer-group pending recovery and ACK after
+the durable terminal commit. Delivery is at least once: publication can precede
+a crash before the Outbox row is marked. PostgreSQL remains the ordering/state
+authority. Lost RUNNING work becomes FAILED/WORKER_LOST instead of automatic
+re-execution; recovered QUEUED work keeps its sequence and can be republished.
 
 M2 migrations live in `agent/persistence/migrations/`. `sessions` owns
 `next_session_seq` and `next_message_seq`; owner-scoped uniqueness constraints
@@ -161,17 +163,18 @@ layer.
 CLI construction continues to select the JSONL-backed memory engine. A service
 process opts into PostgreSQL by injecting
 `ConversationMemoryEngine.for_postgres(repository, owner_id=...)` into
-`AgentLoop`. Until M3 owns background-task lifecycle, service configuration must
-set `enable_consolidation`, `enable_subagents`, and `enable_cron` to false.
+`AgentLoop`. The M5 Worker sets `enable_consolidation`, `enable_subagents`, and
+`enable_cron` to false; these capabilities are not exposed through service env.
 Install service-only drivers with `python -m pip install '.[service]'`.
 `DATABASE_URL` and `REDIS_URL` are used by service processes and migration/test
 tooling. M2 masks common key/value, bearer, and provider-token forms at the
 persistence boundary; M4 applies the same policy to structured logs, event
 payloads, status blobs, timeline exports, and candidate cases.
 
-On Worker interruption, an expired lease is recovered by a sweeper according to
-the retry policy. Recovery is visible in the event timeline and never silently
-reports success.
+After Worker interruption, the replacement takes the exclusive advisory lock
+and marks uncertain RUNNING rows FAILED/WORKER_LOST, preserving their Trace.
+Recovery is visible and does not automatically replay tools with unknown side
+effects. Unclaimed QUEUED work remains eligible after earlier terminal rows.
 
 ## Diagnostics
 
@@ -188,7 +191,7 @@ The normal timeline is:
 
 ```text
 accepted -> OUTBOX.publish -> QUEUE.consume -> running
-  -> CONTEXT/HISTORY.read -> CONFIG.snapshot
+  -> CONFIG.snapshot -> CONTEXT/HISTORY.read
   -> LLM.start/end (zero or more)
   -> TOOL.start/end (zero or more)
   -> HISTORY.commit -> result.end -> FINAL.end
@@ -254,11 +257,29 @@ answer is never promoted automatically.
 
 ## Deployment and health
 
+The first deployment is one host with Nginx, two stateless API containers, one
+single-process asyncio Worker, Redis Streams, and PostgreSQL. Only Nginx maps a
+host port. `deploy/docker-compose.yml` runs a one-shot migration before API or
+Worker startup, uses named volumes, resource limits, restart policy, read-only
+application filesystems, JSON log rotation, and pinned image manifests.
+
 Nginx terminates HTTPS, applies request limits, and routes API traffic with
-`least_conn`. API instances expose `/live` and `/ready`; readiness depends on
-PostgreSQL and Redis connectivity and a healthy Worker handoff path. Shutdown
-marks the instance unready, stops new acceptance, drains bounded work, closes
-MCP/provider resources, and exits within a configured grace period.
+`least_conn`. Its open-source passive upstream checks use `max_fails`,
+`fail_timeout`, short timeouts, Docker DNS refresh, and no `non_idempotent`
+retry. A POST is retried by a client only with the same Idempotency-Key and
+payload. Nginx does not actively consume API readiness; a healthcheck changes
+Docker's diagnostic state and does not update upstream membership.
+
+API instances expose `/health/live` and `/health/ready` (with `/live` and
+`/ready` compatibility aliases). Live means the process responds. Ready checks
+PostgreSQL schema availability, draining state, and durable unfinished-task
+capacity. Redis and Worker heartbeat/backlog are reported independently by
+`/health/doctor` and `membot-health doctor`; API admission readiness is not an
+assertion that the Agent can currently finish a task. SIGTERM makes API
+readiness fail, rejects new mutations, and drains admitted short transactions.
+Worker SIGTERM stops consuming and starting new work, waits within its drain
+budget, closes Provider/MCP/shell resources, and persists interruption state.
+SIGKILL recovery fences old RUNNING rows as `WORKER_LOST` on the next Worker.
 
 ## Compatibility and non-goals
 
