@@ -1,0 +1,661 @@
+[
+  {
+    "id": "context-three-serial",
+    "category": "context_concurrency",
+    "version": 1,
+    "description": "context three serial",
+    "input": "first round",
+    "history": [],
+    "fixtures": {},
+    "expected_status": "SUCCEEDED",
+    "turns": [
+      {
+        "id": "t1",
+        "input": "first round",
+        "session": "a",
+        "expected_status": "SUCCEEDED",
+        "provider": [
+          {
+            "content": "one"
+          }
+        ]
+      },
+      {
+        "id": "t2",
+        "input": "second round",
+        "session": "a",
+        "expected_status": "SUCCEEDED",
+        "provider": [
+          {
+            "content": "two"
+          }
+        ]
+      },
+      {
+        "id": "t3",
+        "input": "third round",
+        "session": "a",
+        "expected_status": "SUCCEEDED",
+        "provider": [
+          {
+            "content": "three"
+          }
+        ]
+      }
+    ],
+    "scenario": "serial",
+    "tools": {
+      "required_tools": [],
+      "allowed_tools": [],
+      "forbidden_tools": [
+        "exec",
+        "spawn",
+        "cron",
+        "web_search",
+        "web_fetch"
+      ],
+      "expected_calls": []
+    },
+    "assertions": [
+      {
+        "turn": "t3",
+        "kind": "history_contains",
+        "value": "first round"
+      },
+      {
+        "turn": "t3",
+        "kind": "history_contains",
+        "value": "second round"
+      },
+      {
+        "turn": "t3",
+        "kind": "equals",
+        "value": "three"
+      }
+    ],
+    "judge_rubric": null,
+    "real_model": false,
+    "business_task": true
+  },
+  {
+    "id": "context-parallel",
+    "category": "context_concurrency",
+    "version": 1,
+    "description": "context parallel",
+    "input": "session A",
+    "history": [],
+    "fixtures": {},
+    "expected_status": "SUCCEEDED",
+    "turns": [
+      {
+        "id": "t1",
+        "input": "session A",
+        "session": "a",
+        "expected_status": "SUCCEEDED",
+        "provider": [
+          {
+            "content": "answer A"
+          }
+        ]
+      },
+      {
+        "id": "t2",
+        "input": "session B",
+        "session": "b",
+        "expected_status": "SUCCEEDED",
+        "provider": [
+          {
+            "content": "answer B"
+          }
+        ]
+      }
+    ],
+    "scenario": "parallel",
+    "tools": {
+      "required_tools": [],
+      "allowed_tools": [],
+      "forbidden_tools": [
+        "exec",
+        "spawn",
+        "cron",
+        "web_search",
+        "web_fetch"
+      ],
+      "expected_calls": []
+    },
+    "assertions": [
+      {
+        "turn": "t1",
+        "kind": "equals",
+        "value": "answer A"
+      },
+      {
+        "turn": "t2",
+        "kind": "equals",
+        "value": "answer B"
+      },
+      {
+        "turn": "t2",
+        "kind": "history_absent",
+        "value": "session A"
+      }
+    ],
+    "judge_rubric": null,
+    "real_model": false,
+    "business_task": true
+  },
+  {
+    "id": "context-concurrency-limit",
+    "category": "context_concurrency",
+    "version": 1,
+    "description": "context concurrency limit",
+    "input": "limit 1",
+    "history": [],
+    "fixtures": {},
+    "expected_status": "SUCCEEDED",
+    "turns": [
+      {
+        "id": "t1",
+        "input": "limit 1",
+        "session": "1",
+        "expected_status": "SUCCEEDED",
+        "provider": [
+          {
+            "content": "answer 1"
+          }
+        ]
+      },
+      {
+        "id": "t2",
+        "input": "limit 2",
+        "session": "2",
+        "expected_status": "SUCCEEDED",
+        "provider": [
+          {
+            "content": "answer 2"
+          }
+        ]
+      },
+      {
+        "id": "t3",
+        "input": "limit 3",
+        "session": "3",
+        "expected_status": "SUCCEEDED",
+        "provider": [
+          {
+            "content": "answer 3"
+          }
+        ]
+      },
+      {
+        "id": "t4",
+        "input": "limit 4",
+        "session": "4",
+        "expected_status": "SUCCEEDED",
+        "provider": [
+          {
+            "content": "answer 4"
+          }
+        ]
+      }
+    ],
+    "scenario": "limit",
+    "tools": {
+      "required_tools": [],
+      "allowed_tools": [],
+      "forbidden_tools": [
+        "exec",
+        "spawn",
+        "cron",
+        "web_search",
+        "web_fetch"
+      ],
+      "expected_calls": []
+    },
+    "assertions": [
+      {
+        "turn": "t4",
+        "kind": "equals",
+        "value": "answer 4"
+      }
+    ],
+    "judge_rubric": null,
+    "real_model": false,
+    "business_task": true
+  },
+  {
+    "id": "context-hot-fairness",
+    "category": "context_concurrency",
+    "version": 1,
+    "description": "context hot fairness",
+    "input": "hot first",
+    "history": [],
+    "fixtures": {},
+    "expected_status": "SUCCEEDED",
+    "turns": [
+      {
+        "id": "t1",
+        "input": "hot first",
+        "session": "a",
+        "expected_status": "SUCCEEDED",
+        "provider": [
+          {
+            "content": "hot 1"
+          }
+        ]
+      },
+      {
+        "id": "t2",
+        "input": "hot second",
+        "session": "a",
+        "expected_status": "SUCCEEDED",
+        "provider": [
+          {
+            "content": "hot 2"
+          }
+        ]
+      },
+      {
+        "id": "t3",
+        "input": "hot third",
+        "session": "a",
+        "expected_status": "SUCCEEDED",
+        "provider": [
+          {
+            "content": "hot 3"
+          }
+        ]
+      },
+      {
+        "id": "t4",
+        "input": "cold first",
+        "session": "cold",
+        "expected_status": "SUCCEEDED",
+        "provider": [
+          {
+            "content": "cold 1"
+          }
+        ]
+      }
+    ],
+    "scenario": "hot",
+    "tools": {
+      "required_tools": [],
+      "allowed_tools": [],
+      "forbidden_tools": [
+        "exec",
+        "spawn",
+        "cron",
+        "web_search",
+        "web_fetch"
+      ],
+      "expected_calls": []
+    },
+    "assertions": [
+      {
+        "turn": "t4",
+        "kind": "equals",
+        "value": "cold 1"
+      },
+      {
+        "turn": "t4",
+        "kind": "history_absent",
+        "value": "hot first"
+      }
+    ],
+    "judge_rubric": null,
+    "real_model": false,
+    "business_task": true
+  },
+  {
+    "id": "context-multi-turn",
+    "category": "context_concurrency",
+    "version": 1,
+    "description": "context multi turn",
+    "input": "private token: ocean",
+    "history": [],
+    "fixtures": {},
+    "expected_status": "SUCCEEDED",
+    "turns": [
+      {
+        "id": "t1",
+        "input": "private token: ocean",
+        "session": "a",
+        "expected_status": "SUCCEEDED",
+        "provider": [
+          {
+            "content": "recorded"
+          }
+        ]
+      },
+      {
+        "id": "t2",
+        "input": "Recall private token.",
+        "session": "a",
+        "expected_status": "SUCCEEDED",
+        "provider": [
+          {
+            "from_history": "private token:"
+          }
+        ]
+      },
+      {
+        "id": "t3",
+        "input": "other session token query",
+        "session": "other",
+        "expected_status": "SUCCEEDED",
+        "provider": [
+          {
+            "from_history": "private token:"
+          }
+        ]
+      }
+    ],
+    "scenario": "single",
+    "tools": {
+      "required_tools": [],
+      "allowed_tools": [],
+      "forbidden_tools": [
+        "exec",
+        "spawn",
+        "cron",
+        "web_search",
+        "web_fetch"
+      ],
+      "expected_calls": []
+    },
+    "assertions": [
+      {
+        "turn": "t2",
+        "kind": "equals",
+        "value": "private token: ocean"
+      },
+      {
+        "turn": "t3",
+        "kind": "equals",
+        "value": "MISSING_HISTORY"
+      },
+      {
+        "turn": "t3",
+        "kind": "history_absent",
+        "value": "ocean"
+      }
+    ],
+    "judge_rubric": null,
+    "real_model": false,
+    "business_task": true
+  },
+  {
+    "id": "context-tool-ownership",
+    "category": "context_concurrency",
+    "version": 1,
+    "description": "context tool ownership",
+    "input": "context first",
+    "history": [],
+    "fixtures": {},
+    "expected_status": "SUCCEEDED",
+    "turns": [
+      {
+        "id": "t1",
+        "input": "context first",
+        "session": "a",
+        "expected_status": "SUCCEEDED",
+        "provider": [
+          {
+            "tool_calls": [
+              {
+                "id": "c1",
+                "name": "record_context",
+                "arguments": {}
+              }
+            ]
+          },
+          {
+            "from_tool": true
+          }
+        ],
+        "channel": "telegram",
+        "chat_id": "100"
+      },
+      {
+        "id": "t2",
+        "input": "context second",
+        "session": "b",
+        "expected_status": "SUCCEEDED",
+        "provider": [
+          {
+            "tool_calls": [
+              {
+                "id": "c2",
+                "name": "record_context",
+                "arguments": {}
+              }
+            ]
+          },
+          {
+            "from_tool": true
+          }
+        ],
+        "channel": "discord",
+        "chat_id": "200"
+      }
+    ],
+    "scenario": "context",
+    "tools": {
+      "required_tools": [
+        "record_context"
+      ],
+      "allowed_tools": [
+        "record_context"
+      ],
+      "forbidden_tools": [
+        "exec",
+        "spawn",
+        "cron",
+        "web_search",
+        "web_fetch"
+      ],
+      "expected_calls": [
+        {
+          "turn": "t1",
+          "name": "record_context",
+          "arguments": {}
+        },
+        {
+          "turn": "t2",
+          "name": "record_context",
+          "arguments": {}
+        }
+      ]
+    },
+    "assertions": [
+      {
+        "turn": "t1",
+        "kind": "json_equals",
+        "value": {
+          "session": "eval:a",
+          "channel": "telegram",
+          "chat_id": "100",
+          "message_id": "m-t1"
+        }
+      },
+      {
+        "turn": "t2",
+        "kind": "json_equals",
+        "value": {
+          "session": "eval:b",
+          "channel": "discord",
+          "chat_id": "200",
+          "message_id": "m-t2"
+        }
+      }
+    ],
+    "judge_rubric": null,
+    "real_model": false,
+    "business_task": true
+  },
+  {
+    "id": "context-final-marker",
+    "category": "context_concurrency",
+    "version": 1,
+    "description": "context final marker",
+    "input": "send a message",
+    "history": [],
+    "fixtures": {},
+    "expected_status": "SUCCEEDED",
+    "turns": [
+      {
+        "id": "t1",
+        "input": "send a message",
+        "session": "a",
+        "expected_status": "SUCCEEDED",
+        "provider": [
+          {
+            "tool_calls": [
+              {
+                "id": "m1",
+                "name": "message",
+                "arguments": {
+                  "content": "sent first"
+                }
+              }
+            ]
+          },
+          {
+            "content": "first final"
+          }
+        ],
+        "channel": "telegram",
+        "chat_id": "100"
+      },
+      {
+        "id": "t2",
+        "input": "no message needed",
+        "session": "b",
+        "expected_status": "SUCCEEDED",
+        "provider": [
+          {
+            "content": "second final"
+          }
+        ],
+        "channel": "discord",
+        "chat_id": "200"
+      }
+    ],
+    "scenario": "message",
+    "tools": {
+      "required_tools": [
+        "message"
+      ],
+      "allowed_tools": [
+        "message"
+      ],
+      "forbidden_tools": [
+        "exec",
+        "spawn",
+        "cron",
+        "web_search",
+        "web_fetch"
+      ],
+      "expected_calls": [
+        {
+          "turn": "t1",
+          "name": "message",
+          "arguments": {
+            "content": "sent first"
+          }
+        }
+      ]
+    },
+    "assertions": [
+      {
+        "turn": "t1",
+        "kind": "delivery_equals",
+        "value": ""
+      },
+      {
+        "turn": "t2",
+        "kind": "delivery_equals",
+        "value": "second final"
+      },
+      {
+        "turn": "t2",
+        "kind": "equals",
+        "value": "second final"
+      }
+    ],
+    "judge_rubric": null,
+    "real_model": false,
+    "business_task": true
+  },
+  {
+    "id": "context-callback",
+    "category": "context_concurrency",
+    "version": 1,
+    "description": "context callback",
+    "input": "callback value",
+    "history": [],
+    "fixtures": {},
+    "expected_status": "SUCCEEDED",
+    "turns": [
+      {
+        "id": "t1",
+        "input": "callback value",
+        "session": "target",
+        "expected_status": "SUCCEEDED",
+        "provider": [
+          {
+            "tool_calls": [
+              {
+                "id": "c1",
+                "name": "record_context",
+                "arguments": {}
+              }
+            ]
+          },
+          {
+            "from_tool": true
+          }
+        ]
+      }
+    ],
+    "scenario": "callback",
+    "tools": {
+      "required_tools": [
+        "record_context"
+      ],
+      "allowed_tools": [
+        "record_context"
+      ],
+      "forbidden_tools": [
+        "exec",
+        "spawn",
+        "cron",
+        "web_search",
+        "web_fetch"
+      ],
+      "expected_calls": [
+        {
+          "turn": "t1",
+          "name": "record_context",
+          "arguments": {}
+        }
+      ]
+    },
+    "assertions": [
+      {
+        "turn": "t1",
+        "kind": "json_equals",
+        "value": {
+          "session": "eval:target",
+          "channel": "eval",
+          "chat_id": "target",
+          "message_id": "m-t1"
+        }
+      }
+    ],
+    "judge_rubric": null,
+    "real_model": false,
+    "business_task": true
+  }
+]

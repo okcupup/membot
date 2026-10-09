@@ -1,0 +1,406 @@
+[
+  {
+    "id": "basic-echo",
+    "category": "basic",
+    "version": 1,
+    "description": "basic echo",
+    "input": "Reply exactly: hello Membot",
+    "history": [],
+    "fixtures": {},
+    "expected_status": "SUCCEEDED",
+    "turns": [
+      {
+        "id": "t1",
+        "input": "Reply exactly: hello Membot",
+        "session": "a",
+        "expected_status": "SUCCEEDED",
+        "provider": [
+          {
+            "content": "hello Membot"
+          }
+        ]
+      }
+    ],
+    "scenario": "single",
+    "tools": {
+      "required_tools": [],
+      "allowed_tools": [],
+      "forbidden_tools": [
+        "exec",
+        "spawn",
+        "cron",
+        "web_search",
+        "web_fetch"
+      ],
+      "expected_calls": []
+    },
+    "assertions": [
+      {
+        "turn": "t1",
+        "kind": "equals",
+        "value": "hello Membot"
+      }
+    ],
+    "judge_rubric": null,
+    "real_model": false,
+    "business_task": true
+  },
+  {
+    "id": "basic-add",
+    "category": "basic",
+    "version": 1,
+    "description": "basic add",
+    "input": "Compute 17 + 25. Reply with only the integer.",
+    "history": [],
+    "fixtures": {},
+    "expected_status": "SUCCEEDED",
+    "turns": [
+      {
+        "id": "t1",
+        "input": "Compute 17 + 25. Reply with only the integer.",
+        "session": "a",
+        "expected_status": "SUCCEEDED",
+        "provider": [
+          {
+            "content": "42"
+          }
+        ]
+      }
+    ],
+    "scenario": "single",
+    "tools": {
+      "required_tools": [],
+      "allowed_tools": [],
+      "forbidden_tools": [
+        "exec",
+        "spawn",
+        "cron",
+        "web_search",
+        "web_fetch"
+      ],
+      "expected_calls": []
+    },
+    "assertions": [
+      {
+        "turn": "t1",
+        "kind": "equals",
+        "value": "42"
+      }
+    ],
+    "judge_rubric": null,
+    "real_model": true,
+    "business_task": true
+  },
+  {
+    "id": "basic-json",
+    "category": "basic",
+    "version": 1,
+    "description": "basic json",
+    "input": "Return JSON with name=\"Membot\" and active=true. No markdown.",
+    "history": [],
+    "fixtures": {},
+    "expected_status": "SUCCEEDED",
+    "turns": [
+      {
+        "id": "t1",
+        "input": "Return JSON with name=\"Membot\" and active=true. No markdown.",
+        "session": "a",
+        "expected_status": "SUCCEEDED",
+        "provider": [
+          {
+            "content": "{\"active\":true,\"name\":\"Membot\"}"
+          }
+        ]
+      }
+    ],
+    "scenario": "single",
+    "tools": {
+      "required_tools": [],
+      "allowed_tools": [],
+      "forbidden_tools": [
+        "exec",
+        "spawn",
+        "cron",
+        "web_search",
+        "web_fetch"
+      ],
+      "expected_calls": []
+    },
+    "assertions": [
+      {
+        "turn": "t1",
+        "kind": "json_equals",
+        "value": {
+          "name": "Membot",
+          "active": true
+        }
+      }
+    ],
+    "judge_rubric": null,
+    "real_model": true,
+    "business_task": true
+  },
+  {
+    "id": "basic-unicode",
+    "category": "basic",
+    "version": 1,
+    "description": "basic unicode",
+    "input": "原样回复：你好，世界 🌏",
+    "history": [],
+    "fixtures": {},
+    "expected_status": "SUCCEEDED",
+    "turns": [
+      {
+        "id": "t1",
+        "input": "原样回复：你好，世界 🌏",
+        "session": "a",
+        "expected_status": "SUCCEEDED",
+        "provider": [
+          {
+            "content": "你好，世界 🌏"
+          }
+        ]
+      }
+    ],
+    "scenario": "single",
+    "tools": {
+      "required_tools": [],
+      "allowed_tools": [],
+      "forbidden_tools": [
+        "exec",
+        "spawn",
+        "cron",
+        "web_search",
+        "web_fetch"
+      ],
+      "expected_calls": []
+    },
+    "assertions": [
+      {
+        "turn": "t1",
+        "kind": "equals",
+        "value": "你好，世界 🌏"
+      }
+    ],
+    "judge_rubric": null,
+    "real_model": false,
+    "business_task": true
+  },
+  {
+    "id": "basic-list",
+    "category": "basic",
+    "version": 1,
+    "description": "basic list",
+    "input": "Sort 9, 2, 5. Return a JSON array.",
+    "history": [],
+    "fixtures": {},
+    "expected_status": "SUCCEEDED",
+    "turns": [
+      {
+        "id": "t1",
+        "input": "Sort 9, 2, 5. Return a JSON array.",
+        "session": "a",
+        "expected_status": "SUCCEEDED",
+        "provider": [
+          {
+            "content": "[2,5,9]"
+          }
+        ]
+      }
+    ],
+    "scenario": "single",
+    "tools": {
+      "required_tools": [],
+      "allowed_tools": [],
+      "forbidden_tools": [
+        "exec",
+        "spawn",
+        "cron",
+        "web_search",
+        "web_fetch"
+      ],
+      "expected_calls": []
+    },
+    "assertions": [
+      {
+        "turn": "t1",
+        "kind": "json_equals",
+        "value": [
+          2,
+          5,
+          9
+        ]
+      }
+    ],
+    "judge_rubric": null,
+    "real_model": true,
+    "business_task": true
+  },
+  {
+    "id": "basic-visible-final",
+    "category": "basic",
+    "version": 1,
+    "description": "basic visible final",
+    "input": "Reply visible answer.",
+    "history": [],
+    "fixtures": {},
+    "expected_status": "SUCCEEDED",
+    "turns": [
+      {
+        "id": "t1",
+        "input": "Reply visible answer.",
+        "session": "a",
+        "expected_status": "SUCCEEDED",
+        "provider": [
+          {
+            "content": "<think>private fixture</think>visible answer"
+          }
+        ]
+      }
+    ],
+    "scenario": "single",
+    "tools": {
+      "required_tools": [],
+      "allowed_tools": [],
+      "forbidden_tools": [
+        "exec",
+        "spawn",
+        "cron",
+        "web_search",
+        "web_fetch"
+      ],
+      "expected_calls": []
+    },
+    "assertions": [
+      {
+        "turn": "t1",
+        "kind": "equals",
+        "value": "visible answer"
+      },
+      {
+        "turn": "t1",
+        "kind": "not_contains",
+        "value": "private fixture"
+      }
+    ],
+    "judge_rubric": null,
+    "real_model": false,
+    "business_task": true
+  },
+  {
+    "id": "basic-history",
+    "category": "basic",
+    "version": 1,
+    "description": "basic history",
+    "input": "Repeat my earlier favorite color statement.",
+    "history": [
+      {
+        "role": "user",
+        "content": "color: blue"
+      },
+      {
+        "role": "assistant",
+        "content": "Recorded."
+      }
+    ],
+    "fixtures": {},
+    "expected_status": "SUCCEEDED",
+    "turns": [
+      {
+        "id": "t1",
+        "input": "Repeat my earlier favorite color statement.",
+        "session": "a",
+        "expected_status": "SUCCEEDED",
+        "provider": [
+          {
+            "from_history": "color:"
+          }
+        ]
+      }
+    ],
+    "scenario": "single",
+    "tools": {
+      "required_tools": [],
+      "allowed_tools": [],
+      "forbidden_tools": [
+        "exec",
+        "spawn",
+        "cron",
+        "web_search",
+        "web_fetch"
+      ],
+      "expected_calls": []
+    },
+    "assertions": [
+      {
+        "turn": "t1",
+        "kind": "equals",
+        "value": "color: blue"
+      },
+      {
+        "turn": "t1",
+        "kind": "history_contains",
+        "value": "color: blue"
+      }
+    ],
+    "judge_rubric": null,
+    "real_model": false,
+    "business_task": true
+  },
+  {
+    "id": "basic-summary",
+    "category": "basic",
+    "version": 1,
+    "description": "basic summary",
+    "input": "Summarize: PostgreSQL stores durable history. Redis transports tasks. One Worker executes them.",
+    "history": [],
+    "fixtures": {},
+    "expected_status": "SUCCEEDED",
+    "turns": [
+      {
+        "id": "t1",
+        "input": "Summarize: PostgreSQL stores durable history. Redis transports tasks. One Worker executes them.",
+        "session": "a",
+        "expected_status": "SUCCEEDED",
+        "provider": [
+          {
+            "content": "PostgreSQL stores history; Redis transports tasks; one Worker executes tasks."
+          }
+        ]
+      }
+    ],
+    "scenario": "single",
+    "tools": {
+      "required_tools": [],
+      "allowed_tools": [],
+      "forbidden_tools": [
+        "exec",
+        "spawn",
+        "cron",
+        "web_search",
+        "web_fetch"
+      ],
+      "expected_calls": []
+    },
+    "assertions": [
+      {
+        "turn": "t1",
+        "kind": "contains",
+        "value": "PostgreSQL"
+      },
+      {
+        "turn": "t1",
+        "kind": "contains",
+        "value": "Redis"
+      },
+      {
+        "turn": "t1",
+        "kind": "contains",
+        "value": "Worker"
+      }
+    ],
+    "judge_rubric": "A correct concise summary preserves all three roles: PostgreSQL durable history, Redis task transport, one Worker execution. No unsupported claims. Evidence must quote the answer.",
+    "real_model": true,
+    "business_task": true
+  }
+]

@@ -165,6 +165,7 @@ packages = ["membot"]
 "session" = "membot/session"
 "utils" = "membot/utils"
 "service" = "membot/service"
+"evaluation" = "membot/evaluation"
 "templates" = "membot/templates"
 "skills" = "membot/skills"
 
@@ -179,7 +180,7 @@ include = [
     "THIRD_PARTY_NOTICES.md",
     "pyproject.toml",
     "agent/", "bus/", "channels/", "cli/", "config/", "cron/", "heartbeat/",
-    "providers/", "session/", "utils/", "service/", "templates/", "skills/",
+    "providers/", "session/", "utils/", "service/", "evaluation/", "templates/", "skills/",
 ]
 
 [tool.ruff]

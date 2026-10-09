@@ -1,0 +1,692 @@
+[
+  {
+    "id": "tool-read",
+    "category": "tool_calling",
+    "version": 1,
+    "description": "tool read",
+    "input": "Read notes/todo.txt using read_note and return the exact note.",
+    "history": [],
+    "fixtures": {
+      "files": {
+        "notes/todo.txt": "buy milk"
+      }
+    },
+    "expected_status": "SUCCEEDED",
+    "turns": [
+      {
+        "id": "t1",
+        "input": "Read notes/todo.txt using read_note and return the exact note.",
+        "session": "a",
+        "expected_status": "SUCCEEDED",
+        "provider": [
+          {
+            "tool_calls": [
+              {
+                "id": "read1",
+                "name": "read_note",
+                "arguments": {
+                  "path": "notes/todo.txt"
+                }
+              }
+            ]
+          },
+          {
+            "from_tool": true
+          }
+        ]
+      }
+    ],
+    "scenario": "single",
+    "tools": {
+      "required_tools": [
+        "read_note"
+      ],
+      "allowed_tools": [
+        "read_note"
+      ],
+      "forbidden_tools": [
+        "exec",
+        "spawn",
+        "cron",
+        "web_search",
+        "web_fetch"
+      ],
+      "expected_calls": [
+        {
+          "turn": "t1",
+          "name": "read_note",
+          "arguments": {
+            "path": "notes/todo.txt"
+          }
+        }
+      ]
+    },
+    "assertions": [
+      {
+        "turn": "t1",
+        "kind": "equals",
+        "value": "buy milk"
+      }
+    ],
+    "judge_rubric": null,
+    "real_model": true,
+    "business_task": true
+  },
+  {
+    "id": "tool-write-read",
+    "category": "tool_calling",
+    "version": 1,
+    "description": "tool write read",
+    "input": "Use write_note to save \"meeting at 9\" in note.txt, then read_note to verify it. Return the exact saved text.",
+    "history": [],
+    "fixtures": {},
+    "expected_status": "SUCCEEDED",
+    "turns": [
+      {
+        "id": "t1",
+        "input": "Use write_note to save \"meeting at 9\" in note.txt, then read_note to verify it. Return the exact saved text.",
+        "session": "a",
+        "expected_status": "SUCCEEDED",
+        "provider": [
+          {
+            "tool_calls": [
+              {
+                "id": "write1",
+                "name": "write_note",
+                "arguments": {
+                  "path": "note.txt",
+                  "content": "meeting at 9"
+                }
+              }
+            ]
+          },
+          {
+            "tool_calls": [
+              {
+                "id": "read1",
+                "name": "read_note",
+                "arguments": {
+                  "path": "note.txt"
+                }
+              }
+            ]
+          },
+          {
+            "from_tool": true
+          }
+        ]
+      }
+    ],
+    "scenario": "single",
+    "tools": {
+      "required_tools": [
+        "read_note",
+        "write_note"
+      ],
+      "allowed_tools": [
+        "write_note",
+        "read_note"
+      ],
+      "forbidden_tools": [
+        "exec",
+        "spawn",
+        "cron",
+        "web_search",
+        "web_fetch"
+      ],
+      "expected_calls": [
+        {
+          "turn": "t1",
+          "name": "write_note",
+          "arguments": {
+            "path": "note.txt",
+            "content": "meeting at 9"
+          }
+        },
+        {
+          "turn": "t1",
+          "name": "read_note",
+          "arguments": {
+            "path": "note.txt"
+          }
+        }
+      ]
+    },
+    "assertions": [
+      {
+        "turn": "t1",
+        "kind": "equals",
+        "value": "meeting at 9"
+      }
+    ],
+    "judge_rubric": null,
+    "real_model": true,
+    "business_task": true
+  },
+  {
+    "id": "tool-calculate",
+    "category": "tool_calling",
+    "version": 1,
+    "description": "tool calculate",
+    "input": "Use calculate to multiply 6 by 7. Reply with the exact result.",
+    "history": [],
+    "fixtures": {},
+    "expected_status": "SUCCEEDED",
+    "turns": [
+      {
+        "id": "t1",
+        "input": "Use calculate to multiply 6 by 7. Reply with the exact result.",
+        "session": "a",
+        "expected_status": "SUCCEEDED",
+        "provider": [
+          {
+            "tool_calls": [
+              {
+                "id": "calc1",
+                "name": "calculate",
+                "arguments": {
+                  "operation": "multiply",
+                  "a": 6,
+                  "b": 7
+                }
+              }
+            ]
+          },
+          {
+            "from_tool": true
+          }
+        ]
+      }
+    ],
+    "scenario": "single",
+    "tools": {
+      "required_tools": [
+        "calculate"
+      ],
+      "allowed_tools": [
+        "calculate"
+      ],
+      "forbidden_tools": [
+        "exec",
+        "spawn",
+        "cron",
+        "web_search",
+        "web_fetch"
+      ],
+      "expected_calls": [
+        {
+          "turn": "t1",
+          "name": "calculate",
+          "arguments": {
+            "operation": "multiply",
+            "a": 6,
+            "b": 7
+          }
+        }
+      ]
+    },
+    "assertions": [
+      {
+        "turn": "t1",
+        "kind": "equals",
+        "value": "42"
+      }
+    ],
+    "judge_rubric": null,
+    "real_model": true,
+    "business_task": true
+  },
+  {
+    "id": "tool-lookup",
+    "category": "tool_calling",
+    "version": 1,
+    "description": "tool lookup",
+    "input": "Use lookup with key sku-1. Return the record as JSON.",
+    "history": [],
+    "fixtures": {
+      "records": {
+        "sku-1": {
+          "stock": 12,
+          "price": 3
+        }
+      }
+    },
+    "expected_status": "SUCCEEDED",
+    "turns": [
+      {
+        "id": "t1",
+        "input": "Use lookup with key sku-1. Return the record as JSON.",
+        "session": "a",
+        "expected_status": "SUCCEEDED",
+        "provider": [
+          {
+            "tool_calls": [
+              {
+                "id": "look1",
+                "name": "lookup",
+                "arguments": {
+                  "key": "sku-1"
+                }
+              }
+            ]
+          },
+          {
+            "from_tool": true
+          }
+        ]
+      }
+    ],
+    "scenario": "single",
+    "tools": {
+      "required_tools": [
+        "lookup"
+      ],
+      "allowed_tools": [
+        "lookup"
+      ],
+      "forbidden_tools": [
+        "exec",
+        "spawn",
+        "cron",
+        "web_search",
+        "web_fetch"
+      ],
+      "expected_calls": [
+        {
+          "turn": "t1",
+          "name": "lookup",
+          "arguments": {
+            "key": "sku-1"
+          }
+        }
+      ]
+    },
+    "assertions": [
+      {
+        "turn": "t1",
+        "kind": "json_equals",
+        "value": {
+          "stock": 12,
+          "price": 3
+        }
+      }
+    ],
+    "judge_rubric": null,
+    "real_model": true,
+    "business_task": true
+  },
+  {
+    "id": "tool-notify",
+    "category": "tool_calling",
+    "version": 1,
+    "description": "tool notify",
+    "input": "Use notify to send text \"ready\" to recipient \"ops\". Report the delivery.",
+    "history": [],
+    "fixtures": {},
+    "expected_status": "SUCCEEDED",
+    "turns": [
+      {
+        "id": "t1",
+        "input": "Use notify to send text \"ready\" to recipient \"ops\". Report the delivery.",
+        "session": "a",
+        "expected_status": "SUCCEEDED",
+        "provider": [
+          {
+            "tool_calls": [
+              {
+                "id": "notify1",
+                "name": "notify",
+                "arguments": {
+                  "recipient": "ops",
+                  "text": "ready"
+                }
+              }
+            ]
+          },
+          {
+            "from_tool": true
+          }
+        ]
+      }
+    ],
+    "scenario": "single",
+    "tools": {
+      "required_tools": [
+        "notify"
+      ],
+      "allowed_tools": [
+        "notify"
+      ],
+      "forbidden_tools": [
+        "exec",
+        "spawn",
+        "cron",
+        "web_search",
+        "web_fetch"
+      ],
+      "expected_calls": [
+        {
+          "turn": "t1",
+          "name": "notify",
+          "arguments": {
+            "recipient": "ops",
+            "text": "ready"
+          }
+        }
+      ]
+    },
+    "assertions": [
+      {
+        "turn": "t1",
+        "kind": "tool_result_contains",
+        "value": "\"delivered\": true"
+      }
+    ],
+    "judge_rubric": "A delivery claim is valid only when the actual Tool trace contains notify(recipient=\"ops\", text=\"ready\") and a successful delivered=true result. Mere prose claiming completion fails. Cite the call and result.",
+    "real_model": true,
+    "business_task": true
+  },
+  {
+    "id": "tool-unicode-params",
+    "category": "tool_calling",
+    "version": 1,
+    "description": "tool unicode params",
+    "input": "Write \"你好🌏\" to unicode.txt, then read it and return its contents.",
+    "history": [],
+    "fixtures": {},
+    "expected_status": "SUCCEEDED",
+    "turns": [
+      {
+        "id": "t1",
+        "input": "Write \"你好🌏\" to unicode.txt, then read it and return its contents.",
+        "session": "a",
+        "expected_status": "SUCCEEDED",
+        "provider": [
+          {
+            "tool_calls": [
+              {
+                "id": "w1",
+                "name": "write_note",
+                "arguments": {
+                  "path": "unicode.txt",
+                  "content": "你好🌏"
+                }
+              }
+            ]
+          },
+          {
+            "tool_calls": [
+              {
+                "id": "r1",
+                "name": "read_note",
+                "arguments": {
+                  "path": "unicode.txt"
+                }
+              }
+            ]
+          },
+          {
+            "from_tool": true
+          }
+        ]
+      }
+    ],
+    "scenario": "single",
+    "tools": {
+      "required_tools": [
+        "read_note",
+        "write_note"
+      ],
+      "allowed_tools": [
+        "write_note",
+        "read_note"
+      ],
+      "forbidden_tools": [
+        "exec",
+        "spawn",
+        "cron",
+        "web_search",
+        "web_fetch"
+      ],
+      "expected_calls": [
+        {
+          "turn": "t1",
+          "name": "write_note",
+          "arguments": {
+            "path": "unicode.txt",
+            "content": "你好🌏"
+          }
+        },
+        {
+          "turn": "t1",
+          "name": "read_note",
+          "arguments": {
+            "path": "unicode.txt"
+          }
+        }
+      ]
+    },
+    "assertions": [
+      {
+        "turn": "t1",
+        "kind": "equals",
+        "value": "你好🌏"
+      }
+    ],
+    "judge_rubric": null,
+    "real_model": false,
+    "business_task": true
+  },
+  {
+    "id": "tool-batch-order",
+    "category": "tool_calling",
+    "version": 1,
+    "description": "tool batch order",
+    "input": "Write alpha to batch.txt then read batch.txt.",
+    "history": [],
+    "fixtures": {},
+    "expected_status": "SUCCEEDED",
+    "turns": [
+      {
+        "id": "t1",
+        "input": "Write alpha to batch.txt then read batch.txt.",
+        "session": "a",
+        "expected_status": "SUCCEEDED",
+        "provider": [
+          {
+            "tool_calls": [
+              {
+                "id": "w1",
+                "name": "write_note",
+                "arguments": {
+                  "path": "batch.txt",
+                  "content": "alpha"
+                }
+              },
+              {
+                "id": "r1",
+                "name": "read_note",
+                "arguments": {
+                  "path": "batch.txt"
+                }
+              }
+            ]
+          },
+          {
+            "from_tool": true
+          }
+        ]
+      }
+    ],
+    "scenario": "single",
+    "tools": {
+      "required_tools": [
+        "read_note",
+        "write_note"
+      ],
+      "allowed_tools": [
+        "write_note",
+        "read_note"
+      ],
+      "forbidden_tools": [
+        "exec",
+        "spawn",
+        "cron",
+        "web_search",
+        "web_fetch"
+      ],
+      "expected_calls": [
+        {
+          "turn": "t1",
+          "name": "write_note",
+          "arguments": {
+            "path": "batch.txt",
+            "content": "alpha"
+          }
+        },
+        {
+          "turn": "t1",
+          "name": "read_note",
+          "arguments": {
+            "path": "batch.txt"
+          }
+        }
+      ]
+    },
+    "assertions": [
+      {
+        "turn": "t1",
+        "kind": "equals",
+        "value": "alpha"
+      }
+    ],
+    "judge_rubric": null,
+    "real_model": false,
+    "business_task": true
+  },
+  {
+    "id": "tool-multi-step",
+    "category": "tool_calling",
+    "version": 1,
+    "description": "tool multi step",
+    "input": "Look up team, read plan.txt, then notify ops with text approved.",
+    "history": [],
+    "fixtures": {
+      "files": {
+        "plan.txt": "ship tomorrow"
+      },
+      "records": {
+        "team": {
+          "name": "ops"
+        }
+      }
+    },
+    "expected_status": "SUCCEEDED",
+    "turns": [
+      {
+        "id": "t1",
+        "input": "Look up team, read plan.txt, then notify ops with text approved.",
+        "session": "a",
+        "expected_status": "SUCCEEDED",
+        "provider": [
+          {
+            "tool_calls": [
+              {
+                "id": "l1",
+                "name": "lookup",
+                "arguments": {
+                  "key": "team"
+                }
+              }
+            ]
+          },
+          {
+            "tool_calls": [
+              {
+                "id": "r1",
+                "name": "read_note",
+                "arguments": {
+                  "path": "plan.txt"
+                }
+              }
+            ]
+          },
+          {
+            "tool_calls": [
+              {
+                "id": "n1",
+                "name": "notify",
+                "arguments": {
+                  "recipient": "ops",
+                  "text": "approved"
+                }
+              }
+            ]
+          },
+          {
+            "content": "approved"
+          }
+        ]
+      }
+    ],
+    "scenario": "single",
+    "tools": {
+      "required_tools": [
+        "lookup",
+        "notify",
+        "read_note"
+      ],
+      "allowed_tools": [
+        "lookup",
+        "read_note",
+        "notify"
+      ],
+      "forbidden_tools": [
+        "exec",
+        "spawn",
+        "cron",
+        "web_search",
+        "web_fetch"
+      ],
+      "expected_calls": [
+        {
+          "turn": "t1",
+          "name": "lookup",
+          "arguments": {
+            "key": "team"
+          }
+        },
+        {
+          "turn": "t1",
+          "name": "read_note",
+          "arguments": {
+            "path": "plan.txt"
+          }
+        },
+        {
+          "turn": "t1",
+          "name": "notify",
+          "arguments": {
+            "recipient": "ops",
+            "text": "approved"
+          }
+        }
+      ]
+    },
+    "assertions": [
+      {
+        "turn": "t1",
+        "kind": "equals",
+        "value": "approved"
+      },
+      {
+        "turn": "t1",
+        "kind": "tool_result_contains",
+        "value": "ship tomorrow"
+      }
+    ],
+    "judge_rubric": null,
+    "real_model": false,
+    "business_task": true
+  }
+]

@@ -1,0 +1,572 @@
+[
+  {
+    "id": "error-provider",
+    "category": "exception_recovery",
+    "version": 1,
+    "description": "error provider",
+    "input": "provider fails",
+    "history": [],
+    "fixtures": {},
+    "expected_status": "FAILED",
+    "turns": [
+      {
+        "id": "t1",
+        "input": "provider fails",
+        "session": "a",
+        "expected_status": "FAILED",
+        "provider": [
+          {
+            "raise": "fixture provider unavailable"
+          }
+        ]
+      },
+      {
+        "id": "t2",
+        "input": "continue after provider failure",
+        "session": "a",
+        "expected_status": "SUCCEEDED",
+        "provider": [
+          {
+            "content": "continued"
+          }
+        ]
+      }
+    ],
+    "scenario": "single",
+    "tools": {
+      "required_tools": [],
+      "allowed_tools": [],
+      "forbidden_tools": [
+        "exec",
+        "spawn",
+        "cron",
+        "web_search",
+        "web_fetch"
+      ],
+      "expected_calls": []
+    },
+    "assertions": [
+      {
+        "turn": "t1",
+        "kind": "error_code",
+        "value": "PROVIDER_ERROR"
+      },
+      {
+        "turn": "t2",
+        "kind": "equals",
+        "value": "continued"
+      },
+      {
+        "turn": "t2",
+        "kind": "history_absent",
+        "value": "provider fails"
+      }
+    ],
+    "judge_rubric": null,
+    "real_model": false,
+    "business_task": false
+  },
+  {
+    "id": "error-missing-final",
+    "category": "exception_recovery",
+    "version": 1,
+    "description": "error missing final",
+    "input": "missing final",
+    "history": [],
+    "fixtures": {},
+    "expected_status": "FAILED",
+    "turns": [
+      {
+        "id": "t1",
+        "input": "missing final",
+        "session": "a",
+        "expected_status": "FAILED",
+        "provider": [
+          {
+            "content": null
+          }
+        ]
+      }
+    ],
+    "scenario": "single",
+    "tools": {
+      "required_tools": [],
+      "allowed_tools": [],
+      "forbidden_tools": [
+        "exec",
+        "spawn",
+        "cron",
+        "web_search",
+        "web_fetch"
+      ],
+      "expected_calls": []
+    },
+    "assertions": [
+      {
+        "turn": "t1",
+        "kind": "error_code",
+        "value": "MISSING_FINAL"
+      }
+    ],
+    "judge_rubric": null,
+    "real_model": false,
+    "business_task": false
+  },
+  {
+    "id": "error-tool",
+    "category": "exception_recovery",
+    "version": 1,
+    "description": "error tool",
+    "input": "tool fails",
+    "history": [],
+    "fixtures": {},
+    "expected_status": "FAILED",
+    "turns": [
+      {
+        "id": "t1",
+        "input": "tool fails",
+        "session": "a",
+        "expected_status": "FAILED",
+        "provider": [
+          {
+            "tool_calls": [
+              {
+                "id": "f1",
+                "name": "fail_tool",
+                "arguments": {
+                  "action": "error"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "t2",
+        "input": "continue after Tool error",
+        "session": "a",
+        "expected_status": "SUCCEEDED",
+        "provider": [
+          {
+            "content": "continued"
+          }
+        ]
+      }
+    ],
+    "scenario": "single",
+    "tools": {
+      "required_tools": [
+        "fail_tool"
+      ],
+      "allowed_tools": [
+        "fail_tool"
+      ],
+      "forbidden_tools": [
+        "exec",
+        "spawn",
+        "cron",
+        "web_search",
+        "web_fetch"
+      ],
+      "expected_calls": [
+        {
+          "turn": "t1",
+          "name": "fail_tool",
+          "arguments": {
+            "action": "error"
+          }
+        }
+      ]
+    },
+    "assertions": [
+      {
+        "turn": "t1",
+        "kind": "error_code",
+        "value": "TOOL_ERROR"
+      },
+      {
+        "turn": "t2",
+        "kind": "history_absent",
+        "value": "tool fails"
+      },
+      {
+        "turn": "t2",
+        "kind": "equals",
+        "value": "continued"
+      }
+    ],
+    "judge_rubric": null,
+    "real_model": false,
+    "business_task": false
+  },
+  {
+    "id": "error-iteration-limit",
+    "category": "exception_recovery",
+    "version": 1,
+    "description": "error iteration limit",
+    "input": "repeat Tool forever",
+    "history": [],
+    "fixtures": {},
+    "expected_status": "FAILED",
+    "turns": [
+      {
+        "id": "t1",
+        "input": "repeat Tool forever",
+        "session": "a",
+        "expected_status": "FAILED",
+        "provider": [
+          {
+            "tool_calls": [
+              {
+                "id": "l1",
+                "name": "calculate",
+                "arguments": {
+                  "operation": "add",
+                  "a": 1,
+                  "b": 1
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "scenario": "single",
+    "tools": {
+      "required_tools": [
+        "calculate"
+      ],
+      "allowed_tools": [
+        "calculate"
+      ],
+      "forbidden_tools": [
+        "exec",
+        "spawn",
+        "cron",
+        "web_search",
+        "web_fetch"
+      ],
+      "expected_calls": [
+        {
+          "turn": "t1",
+          "name": "calculate",
+          "arguments": {
+            "operation": "add",
+            "a": 1,
+            "b": 1
+          }
+        },
+        {
+          "turn": "t1",
+          "name": "calculate",
+          "arguments": {
+            "operation": "add",
+            "a": 1,
+            "b": 1
+          }
+        }
+      ]
+    },
+    "assertions": [
+      {
+        "turn": "t1",
+        "kind": "error_code",
+        "value": "ITERATION_LIMIT"
+      }
+    ],
+    "judge_rubric": null,
+    "real_model": false,
+    "business_task": false,
+    "budget": {
+      "max_iterations": 2
+    }
+  },
+  {
+    "id": "error-llm-timeout",
+    "category": "exception_recovery",
+    "version": 1,
+    "description": "error llm timeout",
+    "input": "hang LLM",
+    "history": [],
+    "fixtures": {},
+    "expected_status": "TIMEOUT",
+    "turns": [
+      {
+        "id": "t1",
+        "input": "hang LLM",
+        "session": "a",
+        "expected_status": "TIMEOUT",
+        "provider": [
+          {
+            "hang": true
+          }
+        ]
+      },
+      {
+        "id": "t2",
+        "input": "continue after timeout",
+        "session": "a",
+        "expected_status": "SUCCEEDED",
+        "provider": [
+          {
+            "content": "continued"
+          }
+        ]
+      }
+    ],
+    "scenario": "single",
+    "tools": {
+      "required_tools": [],
+      "allowed_tools": [],
+      "forbidden_tools": [
+        "exec",
+        "spawn",
+        "cron",
+        "web_search",
+        "web_fetch"
+      ],
+      "expected_calls": []
+    },
+    "assertions": [
+      {
+        "turn": "t1",
+        "kind": "error_code",
+        "value": "LLM_TIMEOUT"
+      },
+      {
+        "turn": "t2",
+        "kind": "equals",
+        "value": "continued"
+      },
+      {
+        "turn": "t2",
+        "kind": "history_absent",
+        "value": "hang LLM"
+      }
+    ],
+    "judge_rubric": null,
+    "real_model": false,
+    "business_task": false,
+    "budget": {
+      "llm_seconds": 0.04
+    }
+  },
+  {
+    "id": "error-tool-timeout",
+    "category": "exception_recovery",
+    "version": 1,
+    "description": "error tool timeout",
+    "input": "hang Tool",
+    "history": [],
+    "fixtures": {},
+    "expected_status": "TIMEOUT",
+    "turns": [
+      {
+        "id": "t1",
+        "input": "hang Tool",
+        "session": "a",
+        "expected_status": "TIMEOUT",
+        "provider": [
+          {
+            "tool_calls": [
+              {
+                "id": "f1",
+                "name": "fail_tool",
+                "arguments": {
+                  "action": "hang"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "scenario": "single",
+    "tools": {
+      "required_tools": [
+        "fail_tool"
+      ],
+      "allowed_tools": [
+        "fail_tool"
+      ],
+      "forbidden_tools": [
+        "exec",
+        "spawn",
+        "cron",
+        "web_search",
+        "web_fetch"
+      ],
+      "expected_calls": [
+        {
+          "turn": "t1",
+          "name": "fail_tool",
+          "arguments": {
+            "action": "hang"
+          }
+        }
+      ]
+    },
+    "assertions": [
+      {
+        "turn": "t1",
+        "kind": "error_code",
+        "value": "TOOL_TIMEOUT"
+      }
+    ],
+    "judge_rubric": null,
+    "real_model": false,
+    "business_task": false,
+    "budget": {
+      "tool_seconds": 0.04
+    }
+  },
+  {
+    "id": "error-queue-timeout",
+    "category": "exception_recovery",
+    "version": 1,
+    "description": "error queue timeout",
+    "input": "block first",
+    "history": [],
+    "fixtures": {},
+    "expected_status": "FAILED",
+    "turns": [
+      {
+        "id": "t1",
+        "input": "block first",
+        "session": "a",
+        "expected_status": "FAILED",
+        "provider": [
+          {
+            "hang": true
+          }
+        ]
+      },
+      {
+        "id": "t2",
+        "input": "expire second",
+        "session": "b",
+        "expected_status": "TIMEOUT",
+        "provider": [
+          {
+            "content": "should not run"
+          }
+        ]
+      },
+      {
+        "id": "t3",
+        "input": "continue after queue expiry",
+        "session": "a",
+        "expected_status": "SUCCEEDED",
+        "provider": [
+          {
+            "content": "continued"
+          }
+        ]
+      }
+    ],
+    "scenario": "queue_timeout",
+    "tools": {
+      "required_tools": [],
+      "allowed_tools": [],
+      "forbidden_tools": [
+        "exec",
+        "spawn",
+        "cron",
+        "web_search",
+        "web_fetch"
+      ],
+      "expected_calls": []
+    },
+    "assertions": [
+      {
+        "turn": "t1",
+        "kind": "error_code",
+        "value": "CANCELLED"
+      },
+      {
+        "turn": "t2",
+        "kind": "error_code",
+        "value": "QUEUE_TIMEOUT"
+      },
+      {
+        "turn": "t3",
+        "kind": "equals",
+        "value": "continued"
+      }
+    ],
+    "judge_rubric": null,
+    "real_model": false,
+    "business_task": false,
+    "budget": {
+      "queue_seconds": 0.04,
+      "llm_seconds": 2.0
+    }
+  },
+  {
+    "id": "error-cancel-release",
+    "category": "exception_recovery",
+    "version": 1,
+    "description": "error cancel release",
+    "input": "cancel first",
+    "history": [],
+    "fixtures": {},
+    "expected_status": "FAILED",
+    "turns": [
+      {
+        "id": "t1",
+        "input": "cancel first",
+        "session": "a",
+        "expected_status": "FAILED",
+        "provider": [
+          {
+            "hang": true
+          }
+        ]
+      },
+      {
+        "id": "t2",
+        "input": "continue after cancel",
+        "session": "a",
+        "expected_status": "SUCCEEDED",
+        "provider": [
+          {
+            "content": "continued"
+          }
+        ]
+      }
+    ],
+    "scenario": "cancel",
+    "tools": {
+      "required_tools": [],
+      "allowed_tools": [],
+      "forbidden_tools": [
+        "exec",
+        "spawn",
+        "cron",
+        "web_search",
+        "web_fetch"
+      ],
+      "expected_calls": []
+    },
+    "assertions": [
+      {
+        "turn": "t1",
+        "kind": "error_code",
+        "value": "CANCELLED"
+      },
+      {
+        "turn": "t2",
+        "kind": "equals",
+        "value": "continued"
+      },
+      {
+        "turn": "t2",
+        "kind": "history_absent",
+        "value": "cancel first"
+      }
+    ],
+    "judge_rubric": null,
+    "real_model": false,
+    "business_task": false
+  }
+]
