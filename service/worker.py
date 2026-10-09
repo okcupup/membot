@@ -65,6 +65,8 @@ class AsyncWorker:
         self.agent: AgentLoop | None = None
         self._lock_connection: Any | None = None
         self._running = False
+        self._draining = False
+        self._stop_lock = asyncio.Lock()
         self._lost = False
         self._stop_event = asyncio.Event()
         self._tasks: set[asyncio.Task[Any]] = set()
@@ -108,23 +110,23 @@ class AsyncWorker:
         if self.provider_factory is not None:
             value = self.provider_factory()
             return await value if inspect.isawaitable(value) else value
-        # Keep provider construction in Worker startup.  API instances never
-        # import or instantiate AgentLoop/provider clients.
-        from membot.cli.commands import _make_provider
-        from membot.config.loader import load_config
-
-        return _make_provider(load_config())
+        from membot.service.runtime_provider import build_provider
+        return build_provider(self.config)
 
     async def _admit(self, context: ExecutionContext) -> bool:
         """Claim only after AgentLoop has acquired its Worker semaphore."""
         if self._lost or not self._running:
             raise WorkerStoppedError("Worker no longer owns execution")
+        if self._draining:
+            raise asyncio.CancelledError("Worker is draining")
         try:
             await self.repository.claim_invocation(
                 context.invocation_id or "", self.execution_owner,
                 lease_seconds=self.config.worker_lease_seconds,
             )
             self._claimed.add(context.invocation_id or "")
+            if self._draining:
+                raise asyncio.CancelledError("Worker drained during claim")
             effective_config = self.config.diagnostic_snapshot()
             if self.agent is not None:
                 effective_config["providerType"] = type(self.agent.provider).__name__
@@ -207,6 +209,7 @@ class AsyncWorker:
             enable_consolidation=False,
             enable_subagents=False,
             enable_cron=False,
+            restrict_to_workspace=True,
         )
 
     async def _run_entry(self, entry_id: str, envelope: dict[str, Any], *, recovered: bool = False) -> None:
@@ -246,6 +249,8 @@ class AsyncWorker:
                 return
             if current.status is not InvocationStatus.QUEUED:
                 return
+            if self._draining:
+                return
             if current.owner_id != self.config.owner_id:
                 logger.error("invocation %s belongs to unsupported owner %s", invocation_id, current.owner_id)
                 await self.repository.finish_interrupted(
@@ -274,6 +279,8 @@ class AsyncWorker:
             # otherwise an out-of-order entry could sit at the local queue head
             # and prevent its predecessor from ever being submitted.
             while self._running:
+                if self._draining:
+                    return
                 # expire_queued() is the sole queue-deadline transition; it
                 # runs in maintenance and avoids racing a claim transaction.
                 current = await self.repository.get_invocation(invocation_id)
@@ -418,6 +425,8 @@ class AsyncWorker:
             await asyncio.sleep(self.config.outbox_poll_seconds)
 
     async def _consume_once(self) -> None:
+        if self._draining:
+            return
         available = self.config.worker_prefetch - len(self._tasks)
         if available <= 0:
             await asyncio.sleep(self.config.queue_poll_seconds)
@@ -435,6 +444,8 @@ class AsyncWorker:
             recovered = False
             entries = await self.transport.read(timeout=self.config.queue_poll_seconds, count=available)
         for entry_id, envelope in entries:
+            if self._draining:
+                break  # remains pending, replacement Worker reclaims it
             task = asyncio.create_task(self._run_entry(entry_id, envelope, recovered=recovered))
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
@@ -452,6 +463,7 @@ class AsyncWorker:
             await self.repository.fail_all_running_worker_lost(owner_id=self.config.owner_id)
             self.agent = await self._build_agent()
             self._running = True
+            self._draining = False
             self._lost = False
             self._stop_event.clear()
             self._needs_reconcile = True
@@ -459,6 +471,7 @@ class AsyncWorker:
             self._next_pending_at = 0.0
             # Publish the committed Outbox before the first consume cycle.
             await self._publish_once()
+            await self.repository.worker_heartbeat(self.config.owner_id, self.execution_owner, "RUNNING", start=True)
         except Exception:
             await self._release_singleton_lock()
             raise
@@ -468,21 +481,28 @@ class AsyncWorker:
         maintenance = asyncio.create_task(self._maintenance())
         ownership = asyncio.create_task(self._watch_ownership())
         try:
-            while self._running:
+            while self._running and not self._draining:
                 await self._consume_once()
         except (asyncio.CancelledError, WorkerStoppedError):
             raise
         finally:
-            maintenance.cancel()
-            ownership.cancel()
-            await asyncio.gather(maintenance, ownership, return_exceptions=True)
-            await self.stop()
+            try:
+                grace = self.config.worker_drain_seconds if self._draining and not self._lost else 0
+                await asyncio.wait_for(self.stop(worker_lost=self._lost, grace=grace),
+                                       grace + self.config.cleanup_seconds)
+            finally:
+                maintenance.cancel()
+                ownership.cancel()
+                await asyncio.gather(maintenance, ownership, return_exceptions=True)
 
     async def _watch_ownership(self) -> None:
         """Stop consumption when the PostgreSQL advisory-lock connection dies."""
         while self._running and self._lock_connection is not None:
             try:
                 await self._lock_connection.fetchval("SELECT 1")
+                await self.repository.worker_heartbeat(
+                    self.config.owner_id, self.execution_owner, "DRAINING" if self._draining else "RUNNING",
+                )
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -492,15 +512,32 @@ class AsyncWorker:
                 for task in tuple(self._tasks):
                     task.cancel()
                 return
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(self.config.worker_heartbeat_seconds)
 
     run_forever = run
 
-    async def stop(self, *, worker_lost: bool = True) -> None:
+    def request_drain(self) -> None:
+        self._draining = True
+        logger.info("Worker draining", extra={"correlation": {"worker": self.execution_owner,
+                                                               "event_type": "WORKER_DRAIN"}})
+
+    async def stop(self, *, worker_lost: bool = True, grace: float = 0) -> None:
+        async with self._stop_lock:
+            await self._stop(worker_lost=worker_lost, grace=grace)
+
+    async def _stop(self, *, worker_lost: bool, grace: float) -> None:
         if not self._running and self._lock_connection is None:
             return
-        self._running = False
+        self._draining = True
         self._lost = worker_lost
+        if grace and not worker_lost:
+            # Unclaimed work must stay QUEUED and not start after SIGTERM.
+            for identifier, task in tuple(self._inflight.items()):
+                if identifier not in self._claimed:
+                    task.cancel()
+            if self._tasks:
+                await asyncio.wait(tuple(self._tasks), timeout=grace)
+        self._running = False
         for task in tuple(self._tasks):
             task.cancel()
         if self._tasks:
@@ -512,5 +549,13 @@ class AsyncWorker:
             # AgentLoop records cancellation while unwinding.  Reclassify only
             # this Worker's own uncertain claims as WORKER_LOST.
             await self.repository.reclassify_worker_cancellations(self.execution_owner)
+        elif grace:
+            await self.repository.reclassify_worker_cancellations(
+                self.execution_owner, error_code="WORKER_DRAIN_TIMEOUT",
+            )
+        try:
+            await self.repository.worker_heartbeat(self.config.owner_id, self.execution_owner, "STOPPED")
+        except Exception:
+            logger.exception("could not persist stopped Worker heartbeat")
         await self._release_singleton_lock()
         self._stop_event.set()

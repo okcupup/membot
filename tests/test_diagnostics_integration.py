@@ -506,7 +506,7 @@ async def test_legacy_migration_backfills_sequences_and_masks_read_payloads(diag
         assert SECRET not in json.dumps(events)
         await repository.append_event("legacy", "TEST", {"step": "after_upgrade"})
         assert (await repository.events("legacy"))[-1]["sequence"] == 3
-        assert await upgrade_pool.fetchval("SELECT count(*) FROM schema_migrations") == 2
+        assert await upgrade_pool.fetchval("SELECT count(*) FROM schema_migrations") == len(list(migrations.glob("*.sql")))
     finally:
         await repository.close()
         # The generated schema is entirely owned by this test and has no

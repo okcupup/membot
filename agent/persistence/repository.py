@@ -196,15 +196,65 @@ class PostgresRepository:
 
     @classmethod
     async def connect(cls, dsn: str, *, min_size: int = 1, max_size: int = 8,
-                      diagnostics: DiagnosticPolicy | None = None) -> "PostgresRepository":
+                      diagnostics: DiagnosticPolicy | None = None,
+                      command_timeout: float = 5.0) -> "PostgresRepository":
         try:
             import asyncpg
         except ImportError as exc:  # pragma: no cover - environment diagnostic
             raise RuntimeError("asyncpg is required for PostgreSQL service mode") from exc
-        return cls(await asyncpg.create_pool(dsn, min_size=min_size, max_size=max_size), diagnostics=diagnostics)
+        return cls(await asyncpg.create_pool(dsn, min_size=min_size, max_size=max_size,
+                                            timeout=command_timeout, command_timeout=command_timeout),
+                   diagnostics=diagnostics)
 
     async def close(self) -> None:
         await self.pool.close()
+
+    async def assert_schema(self) -> None:
+        expected = {path.name for path in Path(__file__).with_name("migrations").glob("*.sql")}
+        applied = {row["version"] for row in await self.pool.fetch("SELECT version FROM schema_migrations")}
+        if not expected <= applied:
+            raise RuntimeError("database migration required; run membot-service migrate before startup")
+
+    async def admission_health(self, owner_id: str, max_unfinished: int) -> dict[str, Any]:
+        await self.assert_schema()
+        count = await self.pool.fetchval(
+            "SELECT count(*) FROM invocations WHERE owner_id=$1 AND status IN ('QUEUED','RUNNING')", owner_id,
+        )
+        return {"postgres": "available", "unfinished": count, "capacity": max_unfinished,
+                "can_accept": count < max_unfinished}
+
+    async def service_diagnostics(self, owner_id: str, *, stale_seconds: float = 5.0) -> dict[str, Any]:
+        counts = await self.pool.fetchrow(
+            "SELECT count(*) FILTER (WHERE status='QUEUED') AS queued, "
+            "count(*) FILTER (WHERE status='RUNNING') AS running FROM invocations WHERE owner_id=$1", owner_id,
+        )
+        unpublished = await self.pool.fetchval(
+            "SELECT count(*) FROM outbox o JOIN invocations i USING(invocation_id) "
+            "WHERE i.owner_id=$1 AND i.status='QUEUED' AND o.published_at IS NULL", owner_id,
+        )
+        worker = await self.pool.fetchrow(
+            "SELECT execution_owner,state,heartbeat_at, "
+            "extract(epoch from clock_timestamp()-heartbeat_at) AS age FROM worker_runtime WHERE owner_id=$1",
+            owner_id,
+        )
+        return {"queued": counts["queued"], "running": counts["running"], "unpublishedOutbox": unpublished,
+                "worker": {"alive": bool(worker and worker["state"] == "RUNNING" and worker["age"] < stale_seconds),
+                           "state": worker["state"] if worker else "ABSENT",
+                           "executionOwner": worker["execution_owner"] if worker else None,
+                           "heartbeatAt": iso_time(worker["heartbeat_at"]) if worker else None}}
+
+    async def worker_heartbeat(self, owner_id: str, execution_owner: str, state: str, *, start: bool = False) -> None:
+        if not start:
+            await self.pool.execute(
+                "UPDATE worker_runtime SET state=$3,heartbeat_at=clock_timestamp() "
+                "WHERE owner_id=$1 AND execution_owner=$2", owner_id, execution_owner, state,
+            )
+            return
+        await self.pool.execute(
+            "INSERT INTO worker_runtime(owner_id,execution_owner,state) VALUES($1,$2,$3) "
+            "ON CONFLICT(owner_id) DO UPDATE SET execution_owner=$2,state=$3,heartbeat_at=clock_timestamp()",
+            owner_id, execution_owner, state,
+        )
 
     async def migrate(self, migrations_dir: Path | None = None) -> None:
         """Apply ordered SQL migrations once, recording each filename."""
@@ -665,6 +715,10 @@ class PostgresRepository:
                     raise PermissionError("invocation belongs to a different owner")
                 if row["status"] in {InvocationStatus.SUCCEEDED.value, InvocationStatus.FAILED.value, InvocationStatus.TIMEOUT.value}:
                     return _row_to_invocation(row)
+                if row["status"] == "QUEUED" and execution_owner and outcome is not ExecutionOutcome.TIMEOUT:
+                    # Shutdown of a local prefetch/scheduler waiter does not
+                    # mean the durable task has ever started executing.
+                    return _row_to_invocation(row)
                 if row["status"] == InvocationStatus.RUNNING.value:
                     lease_valid = await connection.fetchval(
                         "SELECT execution_lease_until > now() FROM invocations WHERE invocation_id=$1",
@@ -887,8 +941,10 @@ class PostgresRepository:
                         )
                 return len(rows)
 
-    async def reclassify_worker_cancellations(self, execution_owner: str, *, limit: int = 1000) -> int:
-        """Turn cancellation caused by Worker shutdown into WORKER_LOST."""
+    async def reclassify_worker_cancellations(self, execution_owner: str, *, limit: int = 1000,
+                                             error_code: str = "WORKER_LOST") -> int:
+        """Explain only this executor's cancellation; don't change other finals."""
+        message = "Worker execution process stopped" if error_code == "WORKER_LOST" else "Worker drain deadline expired"
         async with self.pool.acquire() as connection:
             async with self._event_transaction(connection) as connection:
                 rows = await connection.fetch(
@@ -900,20 +956,20 @@ class PostgresRepository:
                 )
                 for row in rows:
                     result = _result_payload(ExecutionResult.failure(
-                        ExecutionOutcome.CANCELLED, error_code="WORKER_LOST",
-                        error_message="Worker execution process stopped",
+                        ExecutionOutcome.CANCELLED, error_code=error_code,
+                        error_message=message,
                     ), self.diagnostics)
                     updated = await connection.fetchrow(
-                        """UPDATE invocations SET error_code='WORKER_LOST',
-                           error_message='Worker execution process stopped', result=$2::jsonb
+                        """UPDATE invocations SET error_code=$3,
+                           error_message=$4, result=$2::jsonb
                            WHERE invocation_id=$1 AND status='FAILED'
                              AND error_code='CANCELLED' RETURNING *""",
-                        row["invocation_id"], json.dumps(result),
+                        row["invocation_id"], json.dumps(result), error_code, message,
                     )
                     if updated:
                         await _insert_event(
-                            connection, updated, "worker_lost",
-                            {"status": "FAILED", "errorCode": "WORKER_LOST"},
+                            connection, updated, "worker_lost" if error_code == "WORKER_LOST" else "worker_interrupted",
+                            {"status": "FAILED", "errorCode": error_code},
                         )
                 return len(rows)
 

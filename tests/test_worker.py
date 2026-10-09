@@ -265,3 +265,64 @@ async def test_second_worker_is_rejected_by_postgres_lock(service_stack):
     finally:
         await first.stop(worker_lost=False)
         await second.stop(worker_lost=False)
+
+
+@pytest.mark.asyncio
+async def test_worker_graceful_drain_finishes_running_and_leaves_waiters_queued(service_stack):
+    repo, transport, _, tmp_path = service_stack
+    config = _config(tmp_path, worker_concurrency=1)
+    provider = BlockingProvider()
+    worker = AsyncWorker(repo, transport, config, provider=provider)
+    await worker.start()
+    runner = asyncio.create_task(worker.run())
+    try:
+        first, _ = await _accept(repo, config, "drain-session", "service:drain", "first")
+        await asyncio.wait_for(provider.started.wait(), 3)
+        queued, _ = await _accept(repo, config, "drain-session", "service:drain", "second")
+        worker.request_drain()
+        await asyncio.sleep(0)
+        assert not runner.done()
+        provider.release.set()
+        await asyncio.wait_for(runner, 5)
+        assert (await repo.get_invocation(first.invocation_id)).status is InvocationStatus.SUCCEEDED
+        assert (await repo.get_invocation(queued.invocation_id)).status is InvocationStatus.QUEUED
+        assert provider.starts == ["first"]
+        replacement = AsyncWorker(repo, transport, config, provider=WorkerFakeProvider())
+        await replacement.start()
+        next_runner = asyncio.create_task(replacement.run())
+        try:
+            assert (await _wait_terminal(repo, queued.invocation_id)).status is InvocationStatus.SUCCEEDED
+        finally:
+            await replacement.stop(worker_lost=False)
+            await asyncio.wait_for(next_runner, 3)
+    finally:
+        provider.release.set()
+        await worker.stop(worker_lost=False)
+        runner.cancel()
+        await asyncio.gather(runner, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_worker_drain_deadline_cancels_running_and_frees_singleton(service_stack):
+    repo, transport, _, tmp_path = service_stack
+    config = _config(tmp_path, worker_concurrency=1, worker_drain_seconds=0.05)
+    provider = BlockingProvider()
+    worker = AsyncWorker(repo, transport, config, provider=provider)
+    runner = asyncio.create_task(worker.run())
+    try:
+        first, _ = await _accept(repo, config, "drain-timeout", "service:drain-timeout", "first")
+        await asyncio.wait_for(provider.started.wait(), 3)
+        worker.request_drain()
+        await asyncio.wait_for(runner, 5)
+        terminal = await repo.get_invocation(first.invocation_id)
+        assert terminal.status is InvocationStatus.FAILED
+        assert terminal.error_code == "WORKER_DRAIN_TIMEOUT"
+        assert provider.active == 0 and not worker._tasks and worker._lock_connection is None
+        replacement = AsyncWorker(repo, transport, config, provider=WorkerFakeProvider())
+        await replacement.start()
+        await replacement.stop(worker_lost=False)
+    finally:
+        provider.release.set()
+        await worker.stop(worker_lost=False)
+        runner.cancel()
+        await asyncio.gather(runner, return_exceptions=True)

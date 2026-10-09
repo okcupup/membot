@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
 import uuid
+from dataclasses import dataclass, field
 from typing import Any
 
 from aiohttp import web
@@ -24,6 +26,25 @@ logger = logging.getLogger(__name__)
 REPOSITORY = web.AppKey("repository", PostgresRepository)
 CONFIG = web.AppKey("config", ServiceConfig)
 OWN_REPOSITORY = web.AppKey("own_repository", bool)
+
+
+@dataclass
+class AdmissionState:
+    draining: bool = False
+    mutations: set[asyncio.Task] = field(default_factory=set)
+
+
+ADMISSION = web.AppKey("admission", AdmissionState)
+
+
+def begin_api_drain(app: web.Application) -> None:
+    app[ADMISSION].draining = True
+
+
+async def wait_api_drain(app: web.Application, timeout: float) -> None:
+    active = set(app[ADMISSION].mutations)
+    if active:
+        await asyncio.wait(active, timeout=timeout)
 _RequestKey = getattr(web, "RequestKey", web.AppKey)
 REQUEST_ID = _RequestKey("request_id", str)
 TRACE_ID = _RequestKey("trace_id", str)
@@ -77,17 +98,28 @@ def create_api_app(
 ) -> web.Application:
     """Create an API app.  No AgentLoop is constructed in this process."""
     config = config or ServiceConfig.from_env()
+    admission = AdmissionState()
     @web.middleware
     async def request_logging(request: web.Request, handler):
         request[REQUEST_ID] = _request_id(request)
         request[TRACE_ID] = _trace_id(request)
         started = time.monotonic()
-        try:
-            response = await handler(request)
-        except web.HTTPException as exc:
-            response = _json_response({"error": exc.reason, "detail": exc.text}, status=exc.status,
-                                      request_id=request[REQUEST_ID])
+        mutation = request.method in {"POST", "PUT", "PATCH", "DELETE"}
+        if mutation and admission.draining:
+            response = _json_response({"error": "draining"}, status=503)
+        else:
+            task = asyncio.current_task()
+            if mutation:
+                admission.mutations.add(task)
+            try:
+                response = await handler(request)
+            except web.HTTPException as exc:
+                response = _json_response({"error": exc.reason, "detail": exc.text}, status=exc.status,
+                                          request_id=request[REQUEST_ID])
+            finally:
+                admission.mutations.discard(task)
         response.headers["X-Request-ID"] = request[REQUEST_ID]
+        response.headers["X-Instance-ID"] = config.instance_id
         task = request.get(INVOCATION)
         correlation = {
             "requestId": task.request_id if task else request[REQUEST_ID],
@@ -100,6 +132,7 @@ def create_api_app(
             "status": response.status, "method": request.method,
             "route": request.match_info.route.resource.canonical if request.match_info.route.resource else None,
             "error_code": f"HTTP_{response.status}" if response.status >= 400 else None,
+            "instanceId": config.instance_id,
         }
         logger.info("HTTP response", extra={"correlation": correlation})
         return response
@@ -108,16 +141,31 @@ def create_api_app(
     app[REPOSITORY] = repository
     app[CONFIG] = config
     app[OWN_REPOSITORY] = own_repository
+    app[ADMISSION] = admission
 
     async def live(_: web.Request) -> web.Response:
-        return _json_response({"status": "live"})
+        return _json_response({"status": "live", "instanceId": config.instance_id})
 
     async def ready(request: web.Request) -> web.Response:
+        if admission.draining:
+            return _json_response({"status": "not_ready", "reason": "draining"}, status=503)
         try:
-            await repository.pool.fetchval("SELECT 1")
+            details = await asyncio.wait_for(repository.admission_health(config.owner_id, config.max_unfinished),
+                                             config.db_timeout_seconds)
         except Exception as exc:
             return _json_response({"status": "not_ready", "error": redact_data(str(exc))[:200]}, status=503, request_id=_request_id(request))
-        return _json_response({"status": "ready"}, request_id=_request_id(request))
+        return _json_response({"status": "ready" if details["can_accept"] else "not_ready",
+                               "admission": details, "instanceId": config.instance_id},
+                              status=200 if details["can_accept"] else 503, request_id=_request_id(request))
+
+    async def doctor(request: web.Request) -> web.Response:
+        try:
+            details = await asyncio.wait_for(repository.service_diagnostics(
+                config.owner_id, stale_seconds=config.worker_stale_seconds), config.db_timeout_seconds)
+        except Exception as exc:
+            return _json_response({"error": "database_unavailable", "detail": str(exc)[:200]}, status=503)
+        return _json_response({"instanceId": config.instance_id, "draining": admission.draining,
+                               "execution": details, "scope": "Worker heartbeat does not verify model availability"})
 
     async def create_session(request: web.Request) -> web.Response:
         request_id = _request_id(request)
@@ -245,6 +293,9 @@ def create_api_app(
 
     app.router.add_get("/live", live)
     app.router.add_get("/ready", ready)
+    app.router.add_get("/health/live", live)
+    app.router.add_get("/health/ready", ready)
+    app.router.add_get("/health/doctor", doctor)
     app.router.add_post("/v1/sessions", create_session)
     app.router.add_post("/v1/invocations", create_invocation)
     app.router.add_post("/v1/sessions/{session_id}/invocations", create_invocation)

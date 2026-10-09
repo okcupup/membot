@@ -264,7 +264,7 @@ class AgentLoop:
         try:
             await stack.__aenter__()
             await connect_mcp_servers(self._mcp_servers, self.tools, stack)
-        except Exception:
+        except BaseException:
             try:
                 await stack.aclose()
             except Exception:
@@ -960,8 +960,11 @@ class AgentLoop:
     async def close_mcp(self) -> None:
         """Close MCP connections."""
         if self._mcp_init_task and not self._mcp_init_task.done():
+            # Invocation cancellation shields the shared initializer. Process
+            # shutdown owns it and must cancel it instead of waiting forever.
+            self._mcp_init_task.cancel()
             try:
-                await asyncio.shield(self._mcp_init_task)
+                await self._mcp_init_task
             except (asyncio.CancelledError, Exception):
                 pass
         if self._mcp_stack:
@@ -1019,6 +1022,9 @@ class AgentLoop:
 
         await self.subagents.cancel_all()
         await self.close_mcp()
+        close = getattr(self.provider, "aclose", None)
+        if close:
+            await close()
 
     async def _process_message(
         self,

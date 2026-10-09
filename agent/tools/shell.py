@@ -3,6 +3,7 @@
 import asyncio
 import os
 import re
+import signal
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +12,7 @@ from membot.agent.tools.base import Tool
 
 class ExecTool(Tool):
     """Tool to execute shell commands."""
-    
+
     def __init__(
         self,
         timeout: int = 60,
@@ -37,15 +38,15 @@ class ExecTool(Tool):
         self.allow_patterns = allow_patterns or []
         self.restrict_to_workspace = restrict_to_workspace
         self.path_append = path_append
-    
+
     @property
     def name(self) -> str:
         return "exec"
-    
+
     @property
     def description(self) -> str:
         return "Execute a shell command and return its output. Use with caution."
-    
+
     @property
     def parameters(self) -> dict[str, Any]:
         return {
@@ -62,13 +63,13 @@ class ExecTool(Tool):
             },
             "required": ["command"]
         }
-    
+
     async def execute(self, command: str, working_dir: str | None = None, **kwargs: Any) -> str:
         cwd = working_dir or self.working_dir or os.getcwd()
         guard_error = self._guard_command(command, cwd)
         if guard_error:
             return guard_error
-        
+
         env = os.environ.copy()
         if self.path_append:
             env["PATH"] = env.get("PATH", "") + os.pathsep + self.path_append
@@ -80,47 +81,58 @@ class ExecTool(Tool):
                 stderr=asyncio.subprocess.PIPE,
                 cwd=cwd,
                 env=env,
+                start_new_session=os.name == "posix",
             )
-            
+
             try:
                 stdout, stderr = await asyncio.wait_for(
                     process.communicate(),
                     timeout=self.timeout
                 )
             except asyncio.TimeoutError:
-                process.kill()
-                # Wait for the process to fully terminate so pipes are
-                # drained and file descriptors are released.
-                try:
-                    await asyncio.wait_for(process.wait(), timeout=5.0)
-                except asyncio.TimeoutError:
-                    pass
+                await self._terminate(process)
                 return f"Error: Command timed out after {self.timeout} seconds"
-            
+            except asyncio.CancelledError:
+                await self._terminate(process)
+                raise
+
             output_parts = []
-            
+
             if stdout:
                 output_parts.append(stdout.decode("utf-8", errors="replace"))
-            
+
             if stderr:
                 stderr_text = stderr.decode("utf-8", errors="replace")
                 if stderr_text.strip():
                     output_parts.append(f"STDERR:\n{stderr_text}")
-            
+
             if process.returncode != 0:
                 output_parts.append(f"\nExit code: {process.returncode}")
-            
+
             result = "\n".join(output_parts) if output_parts else "(no output)"
-            
+
             # Truncate very long output
             max_len = 10000
             if len(result) > max_len:
                 result = result[:max_len] + f"\n... (truncated, {len(result) - max_len} more chars)"
-            
+
             return result
-            
+
         except Exception as e:
             return f"Error executing command: {str(e)}"
+
+    @staticmethod
+    async def _terminate(process: asyncio.subprocess.Process) -> None:
+        # Kill the shell's whole process group: a killed parent alone leaves
+        # descendants and their pipe descriptors running after cancellation.
+        try:
+            if os.name == "posix":
+                os.killpg(process.pid, signal.SIGKILL)
+            elif process.returncode is None:
+                process.kill()
+        except ProcessLookupError:
+            pass
+        await asyncio.wait_for(process.communicate(), timeout=5.0)
 
     def _guard_command(self, command: str, cwd: str) -> str | None:
         """Best-effort safety guard for potentially destructive commands."""
