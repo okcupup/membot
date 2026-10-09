@@ -1,0 +1,17 @@
+.git
+.venv
+**/__pycache__
+**/*.pyc
+.env*
+!.env.example
+.aws
+.codex
+.agents
+deploy/certs
+deploy/secrets
+deploy/reports
+deploy/backups
+learning_docs
+.pytest_cache
+.ruff_cache
+dist

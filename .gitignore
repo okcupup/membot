@@ -5,3 +5,11 @@ __pycache__/
 .venv/
 venv/
 .env
+.env.*
+!.env.example
+deploy/certs/
+deploy/secrets/
+deploy/reports/
+deploy/backups/
+dist/
+deploy/wheelhouse/*.whl

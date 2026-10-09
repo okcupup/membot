@@ -1,0 +1,54 @@
+# Open-source Nginx >= 1.27.3 supports dynamic DNS in upstream zones.
+# Docker healthcheck is diagnostic only; failures are detected passively here.
+resolver 127.0.0.11 valid=2s ipv6=off;
+resolver_timeout 2s;
+upstream membot_api {
+    zone membot_api 64k;
+    least_conn;
+    server api1:8080 resolve max_fails=1 fail_timeout=3s;
+    server api2:8080 resolve max_fails=1 fail_timeout=3s;
+    keepalive 16;
+}
+limit_req_zone $binary_remote_addr zone=api_rate:10m rate=20r/s;
+limit_req_status 429;
+log_format invocation escape=json '{"time":"$time_iso8601","requestId":"$http_x_request_id","instanceId":"$upstream_http_x_instance_id","upstream":"$upstream_addr","upstreamStatus":"$upstream_status","status":$status,"method":"$request_method","uri":"$uri","duration":$request_time}';
+access_log /dev/stdout invocation;
+error_log /dev/stderr warn;
+
+server {
+    listen 80;
+    server_name ${MEMBOT_PUBLIC_HOST};
+    location = /nginx-live { access_log off; return 200 'live\n'; }
+    location / { return 308 https://${MEMBOT_PUBLIC_HOST}:${MEMBOT_HTTPS_PORT}$request_uri; }
+}
+server {
+    listen 443 ssl;
+    server_name ${MEMBOT_PUBLIC_HOST};
+    ssl_certificate /etc/nginx/tls/fullchain.pem;
+    ssl_certificate_key /etc/nginx/tls/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:TLS:10m;
+    ssl_session_timeout 1d;
+    client_max_body_size 1m;
+    client_body_timeout 10s;
+    client_header_timeout 10s;
+    keepalive_timeout 15s;
+    send_timeout 15s;
+
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_connect_timeout 1s;
+    proxy_send_timeout 15s;
+    proxy_read_timeout 15s;
+    proxy_request_buffering on;
+    proxy_next_upstream error timeout http_502 http_503 http_504;
+    proxy_next_upstream_tries 2;
+    proxy_next_upstream_timeout 3s;
+    # No 'non_idempotent': a POST sent upstream is never retried by Nginx.
+    # Clients retry a POST only with the SAME Idempotency-Key and payload.
+    location /health/ { proxy_pass http://membot_api; }
+    location / { limit_req zone=api_rate burst=40 nodelay; proxy_pass http://membot_api; }
+}

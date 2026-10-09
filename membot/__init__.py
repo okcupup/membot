@@ -14,5 +14,5 @@ __version__ = "0.2.0"
 __logo__ = "🐈"
 
 _repo_root = Path(__file__).resolve().parent.parent
-if str(_repo_root) not in __path__:
+if (_repo_root / "agent" / "loop.py").is_file() and str(_repo_root) not in __path__:
     __path__.append(str(_repo_root))

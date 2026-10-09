@@ -1,0 +1,213 @@
+name: ${COMPOSE_PROJECT_NAME:-membot}
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-app-env: &app-env
+  DATABASE_URL: postgresql://membot:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/membot
+  REDIS_URL: redis://redis:6379/0
+  MEMBOT_OWNER_ID: ${MEMBOT_OWNER_ID:-default}
+  MEMBOT_API_HOST: 0.0.0.0
+  MEMBOT_API_PORT: "8080"
+  MEMBOT_WORKSPACE: /var/lib/membot/workspace
+  MEMBOT_MAX_UNFINISHED: ${MEMBOT_MAX_UNFINISHED:-1024}
+  MEMBOT_MAX_PAYLOAD_BYTES: ${MEMBOT_MAX_PAYLOAD_BYTES:-1048576}
+  MEMBOT_MAX_ITERATIONS: ${MEMBOT_MAX_ITERATIONS:-40}
+  MEMBOT_WORKER_CONCURRENCY: ${MEMBOT_WORKER_CONCURRENCY:-4}
+  MEMBOT_WORKER_PREFETCH: ${MEMBOT_WORKER_PREFETCH:-8}
+  MEMBOT_REDIS_STREAM_MAX_DEPTH: ${MEMBOT_REDIS_STREAM_MAX_DEPTH:-1024}
+  MEMBOT_QUEUE_TIMEOUT_SECONDS: ${MEMBOT_QUEUE_TIMEOUT_SECONDS:-300}
+  MEMBOT_EXECUTION_TIMEOUT_SECONDS: ${MEMBOT_EXECUTION_TIMEOUT_SECONDS:-300}
+  MEMBOT_LLM_TIMEOUT_SECONDS: ${MEMBOT_LLM_TIMEOUT_SECONDS:-120}
+  MEMBOT_TOOL_TIMEOUT_SECONDS: ${MEMBOT_TOOL_TIMEOUT_SECONDS:-60}
+  MEMBOT_DB_TIMEOUT_SECONDS: "5"
+  MEMBOT_API_DRAIN_SECONDS: "10"
+  MEMBOT_WORKER_DRAIN_SECONDS: "20"
+  MEMBOT_CLEANUP_SECONDS: "10"
+  MEMBOT_WORKER_HEARTBEAT_SECONDS: "1"
+  MEMBOT_WORKER_STALE_SECONDS: "5"
+  MEMBOT_MODEL: ${MEMBOT_MODEL:-gpt-4o-mini}
+  MEMBOT_CODE_VERSION: ${MEMBOT_CODE_VERSION:-membot-0.2.0-m5}
+  MEMBOT_DIAGNOSTIC_PAYLOAD_BYTES: ${MEMBOT_DIAGNOSTIC_PAYLOAD_BYTES:-65536}
+  MEMBOT_DIAGNOSTIC_RETENTION_DAYS: ${MEMBOT_DIAGNOSTIC_RETENTION_DAYS:-7}
+
+x-app: &app
+  image: membot-service:${MEMBOT_IMAGE_TAG:-m5-local}
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile
+    args:
+      PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.11.11-slim-bookworm}
+      PIP_NO_INDEX: ${MEMBOT_BUILD_OFFLINE:-0}
+  restart: unless-stopped
+  read_only: true
+  tmpfs:
+    - /tmp:size=128m,mode=1777
+  cap_drop: [ALL]
+  security_opt: ['no-new-privileges:true']
+  pids_limit: 128
+  cpus: "1.0"
+  mem_limit: 768m
+  logging: *logging
+  networks: [backend]
+  depends_on:
+    migration:
+      condition: service_completed_successfully
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:16.8-alpine3.21}
+    environment:
+      POSTGRES_DB: membot
+      POSTGRES_USER: membot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U membot -d membot']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    stop_grace_period: 30s
+    cpus: "1.0"
+    mem_limit: 768m
+    pids_limit: 128
+    shm_size: 128m
+    logging: *logging
+    networks: [backend]
+
+  redis:
+    image: ${REDIS_IMAGE:-redis:7.4.2-alpine3.21}
+    command: [redis-server, --appendonly, 'yes', --appendfsync, everysec, --maxmemory, 192mb, --maxmemory-policy, noeviction]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    stop_grace_period: 30s
+    cpus: "0.5"
+    mem_limit: 256m
+    pids_limit: 64
+    logging: *logging
+    networks: [backend]
+
+  migration:
+    <<: *app
+    command: [migrate]
+    restart: 'no'
+    environment: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api1:
+    <<: *app
+    command: [api]
+    environment:
+      <<: *app-env
+      MEMBOT_INSTANCE_ID: api1
+    stop_grace_period: 40s
+    healthcheck:
+      test: [CMD, membot-health, api]
+      interval: 5s
+      timeout: 4s
+      retries: 3
+      start_period: 15s
+
+  api2:
+    <<: *app
+    command: [api]
+    environment:
+      <<: *app-env
+      MEMBOT_INSTANCE_ID: api2
+    stop_grace_period: 40s
+    healthcheck:
+      test: [CMD, membot-health, api]
+      interval: 5s
+      timeout: 4s
+      retries: 3
+      start_period: 15s
+
+  worker:
+    <<: *app
+    command: [worker]
+    environment:
+      <<: *app-env
+      MEMBOT_INSTANCE_ID: worker
+      MEMBOT_PROVIDER: ${MEMBOT_PROVIDER:-litellm}
+      MEMBOT_PROVIDER_BASE_URL: ${MEMBOT_PROVIDER_BASE_URL:-}
+      MEMBOT_ALLOW_FAKE_PROVIDER: ${MEMBOT_ALLOW_FAKE_PROVIDER:-false}
+      MEMBOT_LLM_API_KEY_FILE: /run/secrets/llm_api_key
+    secrets: [llm_api_key]
+    volumes:
+      - worker_workspace:/var/lib/membot/workspace
+    depends_on:
+      migration:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    cpus: "2.0"
+    mem_limit: 1536m
+    pids_limit: 256
+    stop_grace_period: 45s
+    healthcheck:
+      test: [CMD, membot-health, worker]
+      interval: 10s
+      timeout: 8s
+      retries: 3
+      start_period: 20s
+
+  nginx:
+    image: ${NGINX_IMAGE:-nginx:1.28.0-alpine}
+    ports:
+      - '${MEMBOT_BIND_IP:-127.0.0.1}:${MEMBOT_HTTP_PORT:-8088}:80'
+      - '${MEMBOT_BIND_IP:-127.0.0.1}:${MEMBOT_HTTPS_PORT:-8443}:443'
+    environment:
+      MEMBOT_PUBLIC_HOST: ${MEMBOT_PUBLIC_HOST:?set MEMBOT_PUBLIC_HOST in .env}
+      MEMBOT_HTTPS_PORT: ${MEMBOT_HTTPS_PORT:-8443}
+      NGINX_ENVSUBST_FILTER: ^MEMBOT_
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ${MEMBOT_TLS_DIR:?set MEMBOT_TLS_DIR in .env}:/etc/nginx/tls:ro
+    depends_on:
+      api1:
+        condition: service_started
+      api2:
+        condition: service_started
+    restart: unless-stopped
+    stop_grace_period: 15s
+    cpus: "0.5"
+    mem_limit: 128m
+    pids_limit: 64
+    logging: *logging
+    networks: [backend]
+    healthcheck:
+      test: [CMD-SHELL, 'wget -q -O /dev/null http://127.0.0.1/nginx-live']
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+secrets:
+  llm_api_key:
+    file: ${MEMBOT_LLM_API_KEY_FILE:?set MEMBOT_LLM_API_KEY_FILE in .env}
+volumes:
+  postgres_data:
+  redis_data:
+  worker_workspace:
+networks:
+  backend:
+    ipam:
+      config:
+        - subnet: ${MEMBOT_NETWORK_SUBNET:-172.29.55.0/24}
