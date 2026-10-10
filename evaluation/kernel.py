@@ -34,7 +34,8 @@ async def _pending(agent, count):
         await asyncio.sleep(0)
 
 
-async def run_kernel(case: Case, *, repeat: int = 0, provider=None, fault=None) -> dict:
+async def run_kernel(case: Case, *, repeat: int = 0, provider=None, fault=None, runtime_budget=None) -> dict:
+    budget = runtime_budget or case.budget
     with TemporaryDirectory(prefix="membot-eval-") as temporary:
         workspace = Path(temporary)
         prepare_workspace(case, workspace)
@@ -42,12 +43,12 @@ async def run_kernel(case: Case, *, repeat: int = 0, provider=None, fault=None) 
         provider = provider or FixtureProvider(case, fault=fault)
         agent = ObservedAgent(
             bus=bus, provider=provider, workspace=workspace, model=provider.get_default_model(),
-            max_iterations=case.budget.max_iterations, temperature=0.0, max_tokens=1024,
+            max_iterations=budget.max_iterations, temperature=0.0, max_tokens=1024,
             max_concurrent_invocations=1 if case.scenario == "queue_timeout" else 2,
             max_pending_invocations=32,
-            queue_timeout=case.budget.queue_seconds,
-            execution_timeout=case.budget.execution_seconds,
-            llm_timeout=case.budget.llm_seconds, tool_timeout=case.budget.tool_seconds,
+            queue_timeout=budget.queue_seconds,
+            execution_timeout=budget.execution_seconds,
+            llm_timeout=budget.llm_seconds, tool_timeout=budget.tool_seconds,
             enable_consolidation=False, enable_subagents=False, enable_cron=False,
             restrict_to_workspace=True,
         )
@@ -56,8 +57,15 @@ async def run_kernel(case: Case, *, repeat: int = 0, provider=None, fault=None) 
         if case.history:
             await agent.memory_engine.save_turn(f"eval:{case.turns[0].session}", case.history, 0)
         observations = {}
+        starts = {}
         contracts = []
         tasks = []
+
+        async def admitted(context):
+            starts[context.invocation_id] = time.monotonic()
+            return True
+
+        agent.admission_callback = admitted
 
         async def execute(turn):
             invocation = str(uuid.uuid4())
@@ -71,12 +79,8 @@ async def run_kernel(case: Case, *, repeat: int = 0, provider=None, fault=None) 
                    "status": "QUEUED", "error_code": None, "final": None, "delivery": None}
             observations[turn.id] = row
             accepted_at = time.monotonic()
-            running_at = None
 
             async def event(category, payload):
-                nonlocal running_at
-                if category == "HISTORY" and payload.get("step") == "read":
-                    running_at = running_at or time.monotonic()
                 row["events"].append({"sequence": len(row["events"]) + 1,
                     "invocationId": invocation, "requestId": request, "traceId": trace,
                     "sessionId": turn.session, "time": datetime.now(timezone.utc).isoformat(),
@@ -87,6 +91,8 @@ async def run_kernel(case: Case, *, repeat: int = 0, provider=None, fault=None) 
 
             metadata = {"invocationId": invocation, "requestId": request, "traceId": trace,
                         "message_id": f"m-{turn.id}", "sessionId": turn.session}
+            if isinstance(provider, FixtureProvider):
+                provider.request_plans[request] = turn.provider
             try:
                 if case.scenario == "callback":
                     agent.event_callback = event
@@ -113,6 +119,7 @@ async def run_kernel(case: Case, *, repeat: int = 0, provider=None, fault=None) 
                     row["harness_error"] = str(exc)
             finally:
                 finished_at = time.monotonic()
+                running_at = starts.get(invocation)
                 row["e2e_ms"] = (finished_at - accepted_at) * 1000
                 row["queue_wait_ms"] = ((running_at or finished_at) - accepted_at) * 1000
                 row["execution_ms"] = (finished_at - running_at) * 1000 if running_at else None
@@ -135,10 +142,12 @@ async def run_kernel(case: Case, *, repeat: int = 0, provider=None, fault=None) 
                     await first
                     contracts.append({"name": "provider_cancelled", "passed": provider.cancelled.is_set()})
                     await launch(case.turns[1])
-                else:
-                    await launch(case.turns[1])
+                elif case.scenario == "queue_timeout":
+                    second = launch(case.turns[1])
+                    await second  # execute() records the expected queue deadline
                     first.cancel()
-                    await first
+                    await asyncio.gather(first, return_exceptions=True)
+                    provider.release.set()
                     await launch(case.turns[2])
             else:
                 for turn in case.turns:
@@ -155,7 +164,7 @@ async def run_kernel(case: Case, *, repeat: int = 0, provider=None, fault=None) 
                 await asyncio.gather(*tasks)
 
         try:
-            await asyncio.wait_for(schedule(), case.budget.case_seconds)
+            await asyncio.wait_for(schedule(), budget.case_seconds)
         except Exception as exc:
             contracts.append({"name": "harness_complete", "passed": False, "reason": str(exc)})
         finally:

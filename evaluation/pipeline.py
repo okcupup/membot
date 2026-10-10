@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from membot.agent.redaction import redact_data
+
 from .artifacts import provenance
 from .grading import grade
 from .kernel import run_kernel
@@ -20,6 +22,10 @@ async def run_suite(cases, *, mode="deterministic", repetitions=1, fault=None,
         raise ValueError(f"{mode} runtime must be explicitly configured")
     metadata = provenance(cases, mode, repetitions,
                           real_config=real_runtime.config if real_runtime else None)
+    if real_runtime and real_runtime.calibration:
+        metadata["judge_label_hash"] = real_runtime.calibration["label_hash"]
+    if queue_runner and getattr(queue_runner, "__self__", None):
+        metadata["environment"].update(queue_runner.__self__.environment)
     results = []
     for repeat in range(repetitions):
         for case in cases:
@@ -33,6 +39,7 @@ async def run_suite(cases, *, mode="deterministic", repetitions=1, fault=None,
             if mode == "real" and result["judge_required"]:
                 await real_runtime.judge(case, result)
             results.append(result)
-    return {"schema_version": 1, "kind": "eval_run", "created_at": datetime.now(timezone.utc).isoformat(),
+    # Seal baselines only after redaction: saving must not change the hashed run.
+    return redact_data({"schema_version": 1, "kind": "eval_run", "created_at": datetime.now(timezone.utc).isoformat(),
             "provenance": metadata, "results": results, "metrics": summarize(results),
-            "passed": len(results) == len(cases) * repetitions and all(result["passed"] for result in results)}
+            "passed": len(results) == len(cases) * repetitions and all(result["passed"] for result in results)})

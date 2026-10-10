@@ -34,7 +34,18 @@ def summarize(results):
               "timeout": sum(row["status"] == "TIMEOUT" for row in invocations),
               "succeeded": sum(row["status"] == "SUCCEEDED" for row in invocations),
               "nonterminal": sum(row["status"] not in TERMINAL and row.get("accepted", False) for row in invocations)}
+    counts["expected_failed"] = sum(row["status"] == "FAILED"
+        and result.get("expected_statuses", {}).get(row["turn"]) == "FAILED"
+        for result in results for row in result["invocations"])
+    counts["unexpected_failed"] = counts["failed"] - counts["expected_failed"]
+    counts["expected_timeout"] = sum(row["status"] == "TIMEOUT"
+        and result.get("expected_statuses", {}).get(row["turn"]) == "TIMEOUT"
+        for result in results for row in result["invocations"])
+    counts["unexpected_timeout"] = counts["timeout"] - counts["expected_timeout"]
+    admission = {key: sum(result.get("admission", {}).get(key, 0) for result in results)
+                 for key in ("requests", "accepted_responses", "rejected_responses", "duplicate_responses")}
     return {"counts": counts, "case_contract_pass_rate": ratio(sum(r["passed"] for r in results), len(results)),
+            "admission": admission,
             "business_task_success_rate": ratio(sum(r["passed"] for r in business), len(business)),
             "strict_tool_accuracy": ratio(sum(t["passed"] for t in tools), len(tools)),
             "call_precision": ratio(matched, observed), "call_recall": ratio(matched, expected),

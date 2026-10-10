@@ -44,12 +44,19 @@ def provenance(cases, mode, repetitions, *, real_config=None):
     # Hash effective files as well as HEAD: a working-tree run must not masquerade
     # as a released commit. User development rules and learning docs aren't runtime.
     effective = {}
-    for directory in ("agent", "providers", "service", "evaluation", "templates"):
+    for directory in ("agent", "bus", "providers", "session", "config", "utils", "cron",
+                      "heartbeat", "service", "evaluation", "templates", "skills"):
         for file in sorted((ROOT / directory).rglob("*")):
             if file.is_file() and file.suffix in {".py", ".json", ".md", ".sql"} and "__pycache__" not in file.parts:
+                if directory == "evaluation" and any(part in file.relative_to(ROOT / directory).parts
+                                                     for part in ("reports", "baselines", "candidates")):
+                    continue
+                if directory == "evaluation" and file.parent == ROOT / directory and file.suffix == ".json" \
+                   and file.name not in {"real.example.json", "judge_labels.json"}:
+                    continue
                 effective[str(file.relative_to(ROOT))] = digest(file.read_text())
     prompts = {name: value for name, value in effective.items() if name.startswith("templates/")
-               or name in {"agent/context.py", "evaluation/prompt.md"}}
+               or name.startswith("skills/") or name in {"agent/context.py", "evaluation/prompt.md"}}
     schemas = {}
     for case in cases:
         schemas[case.id] = fixture_registry(case, Path("/isolated-eval"), None).get_definitions()
@@ -71,6 +78,7 @@ def provenance(cases, mode, repetitions, *, real_config=None):
                               "machine": platform.machine(), "dependencies": dependencies},
               "repetitions": repetitions, "tool_schemas": schemas}
     if real_config:
+        from .judge import JUDGE_PROMPT_HASH
         result.update(model=real_config.agent_model, judge_model=real_config.judge_model,
-                      parameters=real_config.public_snapshot())
+                      parameters=real_config.public_snapshot(), judge_prompt_hash=JUDGE_PROMPT_HASH)
     return result

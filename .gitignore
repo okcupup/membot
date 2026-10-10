@@ -13,3 +13,6 @@ deploy/reports/
 deploy/backups/
 dist/
 deploy/wheelhouse/*.whl
+evaluation/reports/
+evaluation/baselines/
+evaluation/candidates/

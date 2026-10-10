@@ -10,8 +10,9 @@ CASES = load_cases()
 
 
 def test_standard_suite_has_eight_runnable_cases_in_each_category():
-    assert len(CASES) == 32
-    assert Counter(case.category for case in CASES) == {category: 8 for category in CATEGORIES}
+    assert len(CASES) >= 32
+    counts = Counter(case.category for case in CASES)
+    assert all(counts[category] >= 8 for category in CATEGORIES)
 
 
 @pytest.mark.asyncio

@@ -1,0 +1,16 @@
+{
+  "agent_model": "SET_PINNED_AGENT_MODEL_VERSION",
+  "judge_model": "SET_PINNED_JUDGE_MODEL_VERSION",
+  "base_url": "https://api.example.com/v1",
+  "model_version_confirmed": false,
+  "max_requests": 100,
+  "max_reserved_tokens": 500000,
+  "max_cost_usd": 2.0,
+  "max_output_tokens": 1024,
+  "agent_input_usd_per_million": 1.0,
+  "agent_output_usd_per_million": 4.0,
+  "judge_input_usd_per_million": 1.0,
+  "judge_output_usd_per_million": 4.0,
+  "labels_file": "evaluation/judge_labels.json",
+  "judge_timeout_seconds": 30.0
+}

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -190,10 +191,12 @@ def confirm_expected(candidate: dict[str, Any], *, status: str, allowed_tools: l
         raise ValueError("review requires an intact input/context snapshot")
     if candidate.get("input_truncated") or not candidate.get("input"):
         raise ValueError("review requires an intact input")
+    candidate_hash = hashlib.sha256(json_bytes(candidate)).hexdigest()
     result = copy.deepcopy(candidate)
     result["expected"] = {
         "confirmed": True, "status": status, "answer": _candidate_redaction(redact_data(answer)),
         "tool_constraints": {"allowed_tools": allowed_tools, "forbidden_tools": forbidden_tools},
+        "candidate_hash": candidate_hash,
     }
     result["review_required"] = False
     # Explicit confirmation still does not register it in the standard suite.

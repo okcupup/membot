@@ -25,7 +25,7 @@ class StrictModel(BaseModel):
 class Budget(StrictModel):
     case_seconds: float = Field(default=8.0, gt=0, le=120)
     queue_seconds: float = Field(default=5.0, gt=0, le=60)
-    execution_seconds: float = Field(default=3.0, gt=0, le=60)
+    execution_seconds: float = Field(default=3.0, gt=0, le=120)
     llm_seconds: float = Field(default=1.0, gt=0, le=60)
     tool_seconds: float = Field(default=1.0, gt=0, le=60)
     max_iterations: int = Field(default=4, ge=1, le=16)
@@ -81,6 +81,7 @@ class Case(StrictModel):
     judge_rubric: str | None = None
     rubric_version: str = "m6-v1"
     budget: Budget = Field(default_factory=Budget)
+    real_budget: Budget | None = None
     business_task: bool = True
     real_model: bool = False
     provenance: dict[str, Any] = Field(default_factory=dict)
@@ -105,6 +106,8 @@ class Case(StrictModel):
             raise ValueError("status alone is not a task oracle")
         if self.real_model and not self.judge_rubric and not self.assertions:
             raise ValueError("real-model cases need an oracle")
+        if self.real_model and self.real_budget is None:
+            raise ValueError("real-model cases need an explicit real timeout budget")
         return self
 
     @property
@@ -122,6 +125,6 @@ def load_cases(path: Path | None = None) -> list[Case]:
         value = json.loads(file.read_text())
         cases.extend(Case.model_validate(item) for item in (value if isinstance(value, list) else [value]))
     ids = [case.id for case in cases]
-    if not cases or len(ids) != len(set(ids)):
+    if not cases or len(cases) > 256 or len(ids) != len(set(ids)):
         raise ValueError("suite must contain unique, runnable Cases")
     return cases

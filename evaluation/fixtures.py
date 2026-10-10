@@ -37,6 +37,7 @@ class FixtureProvider(LLMProvider):
         self.case = case
         self.fault = fault
         self.plans = {turn.input: turn.provider for turn in case.turns}
+        self.request_plans: dict[str, list[dict[str, Any]]] = {}
         self.calls: dict[str, int] = defaultdict(int)
         self.active = 0
         self.max_active = 0
@@ -44,7 +45,7 @@ class FixtureProvider(LLMProvider):
         self.entered: dict[int, asyncio.Event] = defaultdict(asyncio.Event)
         self.release = asyncio.Event()
         self.cancelled = asyncio.Event()
-        self.gate = case.scenario in {"serial", "parallel", "limit", "hot", "context", "message"}
+        self.gate = case.scenario in {"serial", "parallel", "limit", "hot", "context", "message", "queue_timeout"}
 
     def get_default_model(self):
         return "m6-fixture-v1"
@@ -61,7 +62,7 @@ class FixtureProvider(LLMProvider):
             raise RuntimeError("no fixture plan for current input")
         index = self.calls[key]
         self.calls[key] += 1
-        plan = self.plans[current]
+        plan = self.request_plans.get(context.request_id, self.plans[current])
         spec = copy.deepcopy(plan[min(index, len(plan) - 1)])
         self.active += 1
         self.max_active = max(self.max_active, self.active)
@@ -167,10 +168,24 @@ class FixtureTool(Tool):
 
 
 def fixture_registry(case: Case, workspace: Path, bus, *, fault=None) -> ToolRegistry:
-    registry = ToolRegistry()
+    class RecordedFixtureRegistry(ToolRegistry):
+        async def execute(self, name, params):
+            # Diagnostic events store the exact visible result after the normal
+            # registry error wrapper. Do not append its hint a second time.
+            if case.fixtures.get("recorded_tools"):
+                tool = self.get(name)
+                if tool is None:
+                    raise RuntimeError(f"recorded adapter for Tool {name} is missing")
+                errors = tool.validate_params(params)
+                if errors:
+                    raise RuntimeError("recorded Tool argument validation failed: " + "; ".join(errors))
+                return await tool.execute(**params)
+            return await super().execute(name, params)
+
+    registry = RecordedFixtureRegistry()
     for name in case.tools.allowed_tools:
         if name == "message" and name not in case.fixtures.get("recorded_tools", {}):
-            registry.register(MessageTool(send_callback=bus.publish_outbound))
+            registry.register(MessageTool(send_callback=bus.publish_outbound if bus else None))
         else:
             registry.register(FixtureTool(name, workspace, case.fixtures, fault=fault))
     return registry

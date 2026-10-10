@@ -14,6 +14,8 @@ def subset(expected: Any, actual: Any) -> bool:
         return isinstance(actual, dict) and all(key in actual and subset(value, actual[key])
                                                for key, value in expected.items())
     # Keep booleans distinct from integers in key argument assertions.
+    if type(expected) in {int, float} and type(actual) in {int, float}:
+        return expected == actual
     return type(expected) is type(actual) and expected == actual
 
 
@@ -66,11 +68,30 @@ def grade_tools(case: Case, observation: dict) -> dict:
     if case.tools.order == "exact" and len(calls) != len(expected):
         reasons.append("unexpected or missing call occurrence")
     for turn in case.turns:
-        turn_matches = [index for wanted, index in zip(expected, matched, strict=True)
-                        if wanted["turn"] == turn.id and index is not None]
-        if turn_matches != sorted(turn_matches):
-            reasons.append(f"incorrect Tool order for {turn.id}")
-    return {"eligible": case.tools.evaluate, "passed": not reasons, "reasons": reasons,
+        wanted_turn = [wanted for wanted in expected if wanted["turn"] == turn.id]
+        actual_turn = [call for call in calls if call["turn"] == turn.id]
+        if case.tools.order == "exact" and len(actual_turn) != len(wanted_turn):
+            # The global count check above gives the general reason; this one
+            # preserves which Session/turn violated its ordered contract.
+            reasons.append(f"incorrect Tool count for {turn.id}")
+        cursor = 0
+        for wanted in wanted_turn:
+            while cursor < len(actual_turn):
+                actual = actual_turn[cursor]
+                cursor += 1
+                if wanted["name"] == actual["name"] and subset(wanted["arguments"], actual["arguments"]):
+                    break
+                if case.tools.order == "exact":
+                    cursor = len(actual_turn) + 1
+                    break
+            else:
+                cursor = len(actual_turn) + 1
+            if cursor > len(actual_turn):
+                reasons.append(f"incorrect Tool order or arguments for {turn.id}")
+                break
+    eligible = case.tools.evaluate and bool(case.tools.required_tools or case.tools.allowed_tools
+                                            or case.tools.expected_calls)
+    return {"eligible": eligible, "passed": not reasons, "reasons": reasons,
             "calls": calls, "matched_calls": len(used), "observed_calls": len(calls),
             "expected_calls": len(expected), "name_matched_calls": names_matched}
 
@@ -80,6 +101,9 @@ def grade(case: Case, observation: dict, *, fault=None) -> dict:
     observation = {**observation}
     checks = list(observation["contracts"])
     invocations = {row["turn"]: row for row in observation["invocations"]}
+    checks.append({"name": "complete_turn_set", "passed":
+                   len(invocations) == len(observation["invocations"])
+                   and set(invocations) == {turn.id for turn in case.turns}})
     for turn in case.turns:
         row = invocations.get(turn.id)
         status = row.get("status") if row else None
@@ -88,10 +112,18 @@ def grade(case: Case, observation: dict, *, fault=None) -> dict:
         checks.append({"name": f"status:{turn.id}", "passed": status == turn.expected_status,
                        "expected": turn.expected_status, "actual": status})
         if row:
+            starts = [event for event in row["events"] if event["event_type"] in {"LLM", "TOOL"}
+                      and event.get("step") == "start"]
+            endings = {event.get("span_id") for event in row["events"]
+                       if event["event_type"] in {"LLM", "TOOL"} and event.get("step") in {"end", "error"}}
             checks.append({"name": f"evidence:{turn.id}", "passed":
                 bool(row.get("events")) and not row.get("harness_error")
                 and not row.get("recording_limited") and not row.get("retention_gaps")
-                and not any(event.get("payload", {}).get("truncated") for event in row["events"])})
+                and not any(event.get("payload", {}).get("truncated") for event in row["events"])
+                and all(event.get("span_id") in endings for event in starts)
+                and all(all(event.get(key) == row.get(key) for key in
+                            ("invocationId", "requestId", "traceId", "sessionId"))
+                        for event in row["events"])})
             if status not in TERMINAL:
                 checks.append({"name": f"terminal:{turn.id}", "passed": False})
     tools = grade_tools(case, observation)
@@ -135,6 +167,7 @@ def grade(case: Case, observation: dict, *, fault=None) -> dict:
     # Real open-answer cases remain pending until a valid structured Judge verdict.
     needs_judge = observation["mode"] == "real" and bool(case.judge_rubric)
     observation.update(category=case.category, business_eligible=case.business_task,
+                       expected_statuses={turn.id: turn.expected_status for turn in case.turns},
                        checks=checks, tools=tools, deterministic_passed=deterministic_passed,
                        judge_required=needs_judge, judge=None,
                        passed=deterministic_passed and not needs_judge)

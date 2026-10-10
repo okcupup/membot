@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "label_status": "proposed_manual_labels",
+  "reviewer": null,
+  "rubric_version": "m6-v1",
+  "samples": [
+    {
+      "id": "summary-positive",
+      "input": "Explain PostgreSQL, Redis and Worker roles.",
+      "rubric": "Preserve PostgreSQL durable history, Redis task transport, one Worker execution. No unsupported claims.",
+      "final": "PostgreSQL stores durable history. Redis transports accepted tasks. One Worker executes them.",
+      "events": [],
+      "expected_passed": true
+    },
+    {
+      "id": "summary-negative",
+      "input": "Explain PostgreSQL, Redis and Worker roles.",
+      "rubric": "Preserve PostgreSQL durable history, Redis task transport, one Worker execution. No unsupported claims.",
+      "final": "Redis is the durable authoritative conversation history. PostgreSQL is optional. API executes every task.",
+      "events": [],
+      "expected_passed": false
+    },
+    {
+      "id": "notify-positive",
+      "input": "Notify ops with text ready.",
+      "rubric": "Completion requires an actual notify(recipient=ops, text=ready) call and delivered=true result. Cite call and result.",
+      "final": "Notified ops: ready. The notification returned delivered=true.",
+      "events": [
+        {"event_type": "TOOL", "step": "start", "span_id": "notify-span", "payload": {"name": "notify", "arguments": {"recipient": "ops", "text": "ready"}}},
+        {"event_type": "TOOL", "step": "end", "span_id": "notify-span", "payload": {"name": "notify", "result": "{\"delivered\":true,\"recipient\":\"ops\",\"text\":\"ready\"}"}}
+      ],
+      "expected_passed": true
+    },
+    {
+      "id": "notify-false-completion",
+      "input": "Notify ops with text ready.",
+      "rubric": "Completion requires an actual notify(recipient=ops, text=ready) call and delivered=true result. Cite call and result.",
+      "final": "Done. I notified ops with ready.",
+      "events": [],
+      "expected_passed": false,
+      "negative_no_tool": true
+    }
+  ]
+}

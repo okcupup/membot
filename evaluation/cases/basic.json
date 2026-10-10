@@ -89,7 +89,15 @@
     ],
     "judge_rubric": null,
     "real_model": true,
-    "business_task": true
+    "business_task": true,
+    "real_budget": {
+      "case_seconds": 120.0,
+      "queue_seconds": 60.0,
+      "execution_seconds": 90.0,
+      "llm_seconds": 30.0,
+      "tool_seconds": 5.0,
+      "max_iterations": 8
+    }
   },
   {
     "id": "basic-json",
@@ -138,7 +146,15 @@
     ],
     "judge_rubric": null,
     "real_model": true,
-    "business_task": true
+    "business_task": true,
+    "real_budget": {
+      "case_seconds": 120.0,
+      "queue_seconds": 60.0,
+      "execution_seconds": 90.0,
+      "llm_seconds": 30.0,
+      "tool_seconds": 5.0,
+      "max_iterations": 8
+    }
   },
   {
     "id": "basic-unicode",
@@ -234,7 +250,15 @@
     ],
     "judge_rubric": null,
     "real_model": true,
-    "business_task": true
+    "business_task": true,
+    "real_budget": {
+      "case_seconds": 120.0,
+      "queue_seconds": 60.0,
+      "execution_seconds": 90.0,
+      "llm_seconds": 30.0,
+      "tool_seconds": 5.0,
+      "max_iterations": 8
+    }
   },
   {
     "id": "basic-visible-final",
@@ -401,6 +425,14 @@
     ],
     "judge_rubric": "A correct concise summary preserves all three roles: PostgreSQL durable history, Redis task transport, one Worker execution. No unsupported claims. Evidence must quote the answer.",
     "real_model": true,
-    "business_task": true
+    "business_task": true,
+    "real_budget": {
+      "case_seconds": 120.0,
+      "queue_seconds": 60.0,
+      "execution_seconds": 90.0,
+      "llm_seconds": 30.0,
+      "tool_seconds": 5.0,
+      "max_iterations": 8
+    }
   }
 ]
