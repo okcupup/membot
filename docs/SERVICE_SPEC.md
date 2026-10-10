@@ -5,7 +5,8 @@ runtime kernel. M2 adds PostgreSQL history/invocation persistence, migrations,
 and bounded Redis Outbox transport. M3 adds the asynchronous HTTP admission,
 query API, and single-process Redis Streams Worker. M4 adds durable
 Invocation diagnostics, structured stdout logs, timeline viewing, and safe
-recorded replay.
+recorded replay. M5 supplies the single-host deployment; M6 adds executable
+regression/evaluation Cases, metrics, paired baselines and reviewed candidates.
 
 ## Scope
 
@@ -16,7 +17,8 @@ continues to call the existing AgentLoop path until an explicit migration phase.
 
 ## Submission contract
 
-`POST /v1/sessions/{sessionId}/invocations` accepts a bounded JSON body containing
+`POST /v1/sessions` creates an owner-scoped Session. `POST /v1/invocations`
+accepts a bounded JSON body containing `sessionId` and
 the user message, optional media and metadata, and optional client request ID.
 The API generates or validates:
 
@@ -280,6 +282,29 @@ readiness fail, rejects new mutations, and drains admitted short transactions.
 Worker SIGTERM stops consuming and starting new work, waits within its drain
 budget, closes Provider/MCP/shell resources, and persists interruption state.
 SIGKILL recovery fences old RUNNING rows as `WORKER_LOST` on the next Worker.
+
+## Evaluation contract
+
+`evaluation/cases/` has at least eight executable Cases per category:
+basic, Tool Calling, context/concurrency and exception/recovery. Versioned
+expectations are separate from Provider/Tool fixtures. Real AgentLoop kernel
+and real API/PostgreSQL/Redis/Worker runners produce the same bounded report
+contract; selected capabilities and excluded Cases are explicit.
+
+Technical status, deterministic result/Tool assertions and business task
+success are distinct. Strict Tool Accuracy includes required/allowed/forbidden
+names, key arguments and per-turn order; call metrics and no-Tool policies have
+their own denominators. Reports retain accepted/rejected/failed/timed-out/
+nonterminal counts and queue/execution/end-to-end average/p95.
+
+Open answers use a versioned structured Judge only after deterministic gates.
+Agent/Judge models and budgets must be configured and human calibration labels
+confirmed. Missing credentials, missing evidence or Judge errors fail closed.
+Baselines fix Case/schema/model/parameters/environment/repetition hashes;
+paired code/Prompt comparisons report new failures, recoveries and descriptive
+latency differences. Recorded failures require explicit expected review before
+registration and run only isolated adapters. See `docs/EVALUATION.md` for
+commands, CI gates and the current real-model verification limitations.
 
 ## Compatibility and non-goals
 

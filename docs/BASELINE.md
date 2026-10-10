@@ -229,3 +229,61 @@ The local deployment used no real model credentials and makes no public
 availability claim. Cloud validation is still missing a target host, DNS,
 firewall policy, and publicly trusted certificate. A production operator must
 provide those and run smoke with a real Provider before publishing externally.
+
+## M6 executable evaluation baseline
+
+The standard suite is 32 executable Cases, eight per category. It injects
+safe Provider/Tool fixtures into the actual AgentLoop; the queue subset uses
+real HTTP/PG/Redis/Worker production paths. Fixtures measure engine contracts,
+not actual model quality. Commands, metrics, candidate review and CI setup are
+in `docs/EVALUATION.md`; exact acceptance is in `docs/STATUS.md`.
+
+Final local artifacts pin runtime commit
+`3cb1f61f9d0ae4885c9f088439bad6fbaaf64562`, Python 3.11.15/Linux/x86_64 and
+the explicit dependency versions in each report. Queue reports also record
+PostgreSQL 13.23/Redis 6.2.24. Provenance pins all individual Case versions and
+hashes, model `m6-fixture-v1`, temperature 0, max tokens 1024, two repetitions,
+Tool definitions and rubric hashes. The principal hashes are:
+
+```text
+effective_code_hash=f5f17680c043a8d662116546397ddfb51e1278193114feb0dc4da525cdfe7915
+prompt_hash=fe0c448945eb7cca7ee8baea4d25b3810e9eff8f649264e04c06ce4c89bef0bc
+kernel_tool_schema_hash=279d13b2eb43c40893751430864b7d461e4f60205d80b7f52fb2fad116becf4b
+queue_tool_schema_hash=ffb2b3fe753eb353d79f535edfe75b6e3f821810b87560124ed828364a6d706e
+```
+
+`evaluation/baselines/m6-deterministic.json` seals the raw reference run and
+integrity hash. `evaluation/reports/m6-current.json` is a separate second run;
+`m6-comparison.json` pairs all 64 samples with no new failures or recoveries.
+Both runs have 102 logical invocations: 84 succeeded, 12 intentionally failed,
+six intentionally timed out, zero unfinished. Strict Tool Accuracy is 64/64,
+business-eligible fixture Case success 48/48, and matched call precision/recall
+42/42. Separate denominators prevent expected faults or no-Tool tasks from
+being misrepresented as successful model tool tasks.
+
+`m6-queue.json` runs 12x2 Cases: 24/24 contracts, 42 unique invocations
+(30 succeeded/eight expected failed/four expected timeout). It observes 66
+HTTP 202 responses including 24 idempotent duplicates, without additional
+logical tasks or terminal Tool re-execution. Strict Tool Accuracy is 24/24,
+matched call precision/recall 16/16. Twenty Cases are explicitly excluded from
+queue mode, not counted as passing there. Full old/new tests with both real
+services report `163 passed in 45.00s`, no skips.
+
+The independent kernel run E2E mean/p95 is 14.056/46.574 ms; queue mode is
+137.976/268.466 ms. These are local fixture observations with intentional
+faults and harness/query overhead; they imply no capacity or stable latency
+improvement. Raw repetitions, queue/execution samples and paired deltas are
+retained. Code/Agent Prompt changes are comparable; changed Case/schema/model/
+rubric/Judge/configured parameters/mode/environment/repetition count requires
+an explicit new baseline. Report directories/private configs are git-ignored
+and excluded from the installed wheel/Docker build context.
+
+Four injected CLI defects each return 1 and pass with exit 0 after removal;
+failure recordings from PostgreSQL become runnable reviewed fixtures without
+executing external writes. `scripts/m0_baseline.py` separately still observes
+native bus parallelism 2 and one-Session process_direct serialism 1.
+
+There is no real-model baseline yet. Agent/Judge credentials, pinned private
+configuration and human confirmation of the four proposed Judge labels are
+missing. Requested real preflight fails explicitly. No fixture rate or
+synthetic calibration result is presented as actual model/Judge performance.

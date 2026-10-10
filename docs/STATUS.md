@@ -2,10 +2,13 @@
 
 Date: 2026-10-10 (Asia/Shanghai)
 
-M0 through M5 are complete locally. M5 now supplies and verifies the single-host
-Compose deployment. The local TLS/fake-provider verification does not represent
-a public cloud HTTPS deployment or real-model evaluation. See
-`docs/DEPLOYMENT.md` for the runnable configuration and commands.
+M0 through M5 are complete locally. M6 implementation and local engineering
+acceptance are complete: executable Cases, durable queue evaluation, metrics,
+paired baselines, reviewed failure candidates and CI. Actual real-model/Judge
+calibration remains unverified because model credentials, pinned private
+configuration and human-confirmed labels are absent. The local TLS/Fake
+Provider results do not represent public HTTPS deployment or real task success.
+See `docs/DEPLOYMENT.md` and `docs/EVALUATION.md` for runnable commands.
 
 The reviewed starting commit was:
 
@@ -344,7 +347,7 @@ commits are 6d28811 (lifecycle), 45feb6c (wheel/image/Compose), and 6ca4c93
 (scripts/drills/fixes); the fourth commit closes documentation. The phase is
 merged to local main with --no-ff after acceptance, without a remote push.
 
-Remaining risks:
+Remaining risks at the M5 checkpoint:
 
 1. No target cloud host, domain/DNS, firewall/access scope or public certificate
    was supplied. Local self-signed HTTPS is verified; public HTTPS deployment
@@ -357,3 +360,163 @@ Remaining risks:
 4. The single-owner API has no user login/auth layer. External exposure needs
    the intended caller access policy; tool workspace files require their own
    backup alongside PostgreSQL if real write tools are used.
+
+## M6 implementation and acceptance
+
+Branch: `test/m6-regression`, starting from the M5 implementation checkpoint
+`fcef948`. Runtime/evaluator acceptance artifacts pin
+`3cb1f61f9d0ae4885c9f088439bad6fbaaf64562`; the fourth development commit closes
+documentation. The three implementation commits are:
+
+- `f3d0995`: 32 versioned runnable Cases and actual AgentLoop fixture execution.
+- `951285d`: HTTP/Queue evaluation, structured Judge/budget, paired Baselines
+  and explicitly reviewed failure candidate registration.
+- `3cb1f61`: evidence/replay checks, installed evaluator, package whitelist and
+  CI gates retaining raw repeated samples.
+
+Each standard category has eight Cases. Fixtures inject Provider/Tool adapters
+into the real AgentLoop, scheduler, memory and Tool iteration loop. Event gates
+check serial three turns, parallel Sessions, limits, cold progress behind a hot
+Session, routing/Final isolation, timeout and cancellation recovery. Case
+expected fields and observed outputs remain separate. The four intentional
+defects (Tool error, context leak, false terminal status and missing Tool with
+a completion claim) fail the pipeline and pass after removing the injection.
+
+The queue runner uses two production API apps with separate PostgreSQL pools,
+one production AsyncWorker, real Redis Streams and durable Outbox/events. It
+runs 12 selected Cases, including errors/timeouts and concurrent ordering,
+queries through API2 after API1 submission, and checks HTTP duplicate admission
+and terminal redelivery without re-execution. Dedicated owners/Sessions and a
+random stream isolate each run; retained database records support diagnosis.
+It does not claim 32 Queue Cases: the other 20 are explicitly excluded there
+and covered by the kernel/previous integration suites.
+
+Strict Tool Accuracy checks required/allowed/forbidden names, key arguments,
+extra occurrences and per-turn order. Its denominator includes prohibition
+Cases; call-bearing and no-call Case accuracy are also separate. JSON boolean
+and integer assertions cannot match accidentally. Business success, technical
+SUCCEEDED and expected recovery failures have distinct counts/denominators.
+Incomplete/truncated evidence, missing context, null/mismatched spans and IDs
+cannot become a pass. Reports have a 32 MiB limit and private atomic writes.
+
+Baselines fix Case/version/schema/model/parameters/environment/repetition
+metadata and seal the raw report integrity hash. Code/Agent Prompt changes can
+be compared; changed Case/schema/rubric/Judge/model/mode/environment requires
+an explicit new baseline. Comparisons pair Case/repetition and preserve every
+latency sample; there is no significance or stable-improvement claim.
+
+Failure candidate tests read actual PostgreSQL Provider/Tool error recordings,
+export/redact input/history/config, require explicit expected review, register
+Cases and execute them in a fresh AgentLoop. Shell/write/network operations are
+recorded adapters only; an external sentinel remains absent. Tampered,
+expired, partial, unconfirmed or implicit expectations are rejected. The test
+reviewer is a synthetic fixture identity, not a claim of human dataset review.
+
+Exact final checks:
+
+```bash
+LITELLM_LOCAL_MODEL_COST_MAP=True \
+DATABASE_URL=postgresql://membot:membot@127.0.0.1:55432/membot_m6_20261010 \
+REDIS_URL=redis://127.0.0.1:56379/0 \
+./.venv/bin/python -m pytest -q -rs
+# 163 passed in 45.00s, no skipped integration cases
+
+LITELLM_LOCAL_MODEL_COST_MAP=True ./.venv/bin/python scripts/evaluate_cases.py \
+  --mode deterministic --assert-count 32 --repeat 2 --assert-report \
+  --output evaluation/reports/m6-baseline-run.json \
+  --write-baseline evaluation/baselines/m6-deterministic.json --replace-baseline
+LITELLM_LOCAL_MODEL_COST_MAP=True ./.venv/bin/python scripts/evaluate_cases.py \
+  --mode deterministic --assert-count 32 --repeat 2 --assert-report \
+  --output evaluation/reports/m6-current.json
+LITELLM_LOCAL_MODEL_COST_MAP=True ./.venv/bin/python scripts/evaluate_cases.py \
+  --mode baseline --assert-report \
+  --baseline evaluation/baselines/m6-deterministic.json \
+  --report evaluation/reports/m6-current.json \
+  --output evaluation/reports/m6-comparison.json
+# both 64/64 Case Contracts; comparison has 64 pairs, zero new failures/recoveries
+
+LITELLM_LOCAL_MODEL_COST_MAP=True \
+DATABASE_URL=postgresql://membot:membot@127.0.0.1:55432/membot_m6_20261010 \
+REDIS_URL=redis://127.0.0.1:56379/0 \
+./.venv/bin/python scripts/evaluate_cases.py \
+  --mode queue --assert-count 12 --repeat 2 --assert-report \
+  --output evaluation/reports/m6-queue.json
+# 24/24 Case Contracts; 42 unique Invocations; 66 HTTP 202, including 24 duplicates
+
+./.venv/bin/python scripts/wheel_check.py
+# fresh locked-dependency install; pip check, site-packages imports, CLI,
+# all Case resources and installed membot-eval basic-echo execution passed
+# wheel excludes reports/baselines/candidates/private configs
+./.venv/bin/ruff check evaluation scripts/evaluate_cases.py \
+  scripts/wheel_check.py tests/regression service/diagnostics.py
+./.venv/bin/python -m compileall -q agent bus channels cli config cron heartbeat \
+  providers session utils membot service evaluation tests scripts
+git diff --check
+# passed
+```
+
+Actual engineering metrics (two repetitions, Fake Provider/isolated Tools):
+
+| Metric | Kernel | Real HTTP/PG/Redis Queue |
+| --- | --- | --- |
+| Case Contract | 64/64 | 24/24 |
+| Business-eligible fixture Case | 48/48 | 12/12 |
+| Strict Tool Accuracy | 64/64 | 24/24 |
+| Call-bearing Case Accuracy | 28/28 | 10/10 |
+| No-Tool Policy Accuracy | 36/36 | 14/14 |
+| Call precision / recall | 42/42 each | 16/16 each |
+| Unique Invocations accepted / rejected | 102 / 0 | 42 / 0 |
+| SUCCEEDED / expected FAILED / expected TIMEOUT | 84 / 12 / 6 | 30 / 8 / 4 |
+| Nonterminal / unexpected failure / unexpected timeout | 0 / 0 / 0 | 0 / 0 / 0 |
+| Timeout Rate | 6/102 | 4/42 |
+| E2E mean / p95, ms | 14.056 / 46.574 | 137.976 / 268.466 |
+| Queue wait mean / p95, ms | 2.534 / 14.055 | 64.145 / 209.677 |
+| Execution mean / p95, ms | 11.752 / 46.441 | 51.998 / 93.485 |
+
+Kernel E2E/queue has 102 samples and execution 100 because two intentionally
+expired queued turns never started. Queue timing has 42 samples. The fixture
+timeouts make the Timeout Rate nonzero by design. These local measurements
+include harness/HTTP/query overhead and deliberate faults; they are not a
+real-model quality, throughput, capacity or stable performance claim. Baseline
+and independent current raw results remain in ignored `evaluation/reports/`
+and `evaluation/baselines/` with Case hashes and provenance.
+
+The host test used Python 3.11.15, PostgreSQL 13.23 and Redis 6.2.24; CI services
+pin PostgreSQL 16.8/Redis 7.4.2. Ordinary sandbox sockets/DNS are restricted;
+real local service and wheel dependency checks were run with authorized
+external access. The final tests contain no unavailable-service skips.
+An initial Outbox trace assertion used the wrong event step; candidate replay
+also duplicated the production Tool error hint. Both were fixed and tested.
+Wheel inspection additionally found local reports included by directory force
+inclusion; source/resource whitelisting and a negative package check fixed it.
+
+CLI fault probes for `tool_error`, `context_leak`, `wrong_status` and
+`missing_tool` each exited 1; corresponding fixed runs exited 0. Their raw
+reports and `m6-fault-gates.json` are retained. The native bus baseline still
+observes max active 2 across Sessions; process_direct observes 1 for one
+Session and outbound queue size 0, recorded separately at
+`/tmp/membot-m6-native-baseline.json`.
+
+CI is configured for every push/PR engineering regression, default real queue
+integration, repeated samples/artifact upload and paired reference comparison.
+With reviewed credentials/config/budget, Prompt/Tool/Provider/Case changes
+trigger real-model runs; fork PRs receive no secrets. Workflow YAML and local
+commands passed. No remote CI run or remote push was performed.
+
+Real-model acceptance is still pending, explicitly:
+
+- `MEMBOT_EVAL_API_KEY`, `MEMBOT_JUDGE_API_KEY`, `MEMBOT_LLM_API_KEY` and
+  `OPENAI_API_KEY` were absent (only presence was inspected, no values printed).
+- No pinned private Agent/Judge model/endpoint/pricing configuration was
+  provided. `--mode real` without it exited 1 and saved `eval_error` in
+  `evaluation/reports/m6-real-preflight.json`.
+- Four proposed calibration labels include pass/fail examples and the
+  completion-without-Tool negative. No human confirmation was received;
+  `evaluation/judge_labels.json` remains `proposed_manual_labels`.
+- Tests validate structured verdicts, literal evidence, missing credentials,
+  bounded spending, uncalibrated Judges and deterministic gate priority using
+  fixtures. They do not measure actual model task success or real Judge accuracy.
+
+The local engineering checkpoint is merged to main with `--no-ff` after these
+checks; `learning_docs/M6.md` and the user's AGENTS.md edits remain outside all
+phase commits. M7/M8 capacity and broader fault drills are still future phases.

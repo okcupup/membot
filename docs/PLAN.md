@@ -148,9 +148,23 @@ Acceptance:
 
 ```bash
 ./.venv/bin/python -m pytest -q tests/regression
-./.venv/bin/python scripts/evaluate_cases.py --mode deterministic --assert-count 32
-./.venv/bin/python scripts/evaluate_cases.py --mode baseline --assert-report
+./.venv/bin/python scripts/evaluate_cases.py --mode deterministic --assert-count 32 --repeat 2 --output evaluation/reports/reference.json --write-baseline evaluation/baselines/deterministic.json
+./.venv/bin/python scripts/evaluate_cases.py --mode deterministic --assert-count 32 --repeat 2 --output evaluation/reports/current.json
+./.venv/bin/python scripts/evaluate_cases.py --mode baseline --assert-report --baseline evaluation/baselines/deterministic.json --report evaluation/reports/current.json --output evaluation/reports/comparison.json
+DATABASE_URL=... REDIS_URL=... ./.venv/bin/python scripts/evaluate_cases.py --mode queue --assert-count 12 --repeat 2 --assert-report
+MEMBOT_EVAL_API_KEY=... MEMBOT_JUDGE_API_KEY=... ./.venv/bin/python scripts/evaluate_cases.py --mode real --real-config evaluation/real.private.json --repeat 3
 ```
+
+The deterministic command uses fixture adapters in the real AgentLoop; the
+queue command requires reachable PostgreSQL/Redis and runs the durable Worker
+path; open-ended real evaluation requires pinned Agent/Judge models, human
+confirmed Judge labels, credentials and an explicit reservation budget. Missing
+requirements are a failed requested job, never a fixture pass. CI runs
+deterministic and PostgreSQL/Redis regressions on every push/PR. Budgeted
+real-provider jobs trigger on relevant Prompt/Tool changes when repository
+credentials/config/confirmed labels are configured; manual dispatch is also
+available. No fixture metric claims real-model task success. See
+[EVALUATION.md](EVALUATION.md).
 
 ## M7: load and concurrency
 
