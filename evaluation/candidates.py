@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from membot.agent.redaction import redact_data
-from membot.service.diagnostics import _candidate_redaction
+from membot.service.diagnostics import _candidate_redaction, candidate_case
 
 from .schema import TERMINAL, Case, digest
 
@@ -103,19 +103,29 @@ def register_candidate(candidate: dict[str, Any], recording: dict[str, Any], exp
         raise ValueError("source Invocation is not a failure")
     if source.get("invocationId") and source["invocationId"] != invocation.get("invocationId"):
         raise ValueError("candidate and recording Invocation IDs do not match")
+    derived = candidate_case(recording)
+    if any(candidate.get(key) != derived.get(key) for key in
+           ("source", "input", "history_snapshot", "config_version", "observed")):
+        raise ValueError("candidate input, history or identity differs from its recording")
     if candidate.get("recording_limited") or candidate.get("retention_gaps") or not candidate.get("context_complete") \
        or recording.get("recording_limited") or recording.get("retention_gaps"):
         raise ValueError("candidate recording is incomplete, expired or truncated")
     required_events = [event for event in recording.get("events", [])
                        if event.get("event_type", "").upper() in {"LLM", "TOOL", "CONTEXT", "CONFIG"}]
+    if invocation.get("errorCode") in {"WORKER_LOST", "CANCELLED"}:
+        raise ValueError("interruption without a recorded outcome is diagnostic only")
+    if not _events(recording, "LLM", "start") or not _events(recording, "CONFIG", "snapshot"):
+        raise ValueError("complete LLM start and configuration snapshots are required")
     if any(event.get("payload", {}).get("truncated") or event.get("expires_at") and
            datetime.fromisoformat(event["expires_at"]) <= datetime.now(timezone.utc)
            for event in required_events):
         raise ValueError("recorded execution evidence is expired or truncated")
     if len({event.get("attempt", 0) for event in required_events}) > 1:
         raise ValueError("multiple attempts cannot become one replay fixture")
-    endings = {event.get("span_id") for event in required_events if event.get("step") in {"end", "error"}}
-    if any(event.get("step") == "start" and event.get("span_id") not in endings for event in required_events):
+    endings = {(event["event_type"].upper(), event.get("span_id")) for event in required_events
+               if event.get("step") in {"end", "error"}}
+    if any(event.get("step") == "start" and (not event.get("span_id") or
+           (event["event_type"].upper(), event["span_id"]) not in endings) for event in required_events):
         raise ValueError("execution contains an incomplete span")
     recording = _candidate_redaction(redact_data(recording))
     input_text = _accepted_input(candidate, recording)
@@ -148,6 +158,14 @@ def register_candidate(candidate: dict[str, Any], recording: dict[str, Any], exp
         raise ValueError("registration requires a confirmed answer, assertions or Judge rubric")
     providers = _recorded_provider(recording, error_code)
     recorded_tools, observed_tools = _recorded_tools(recording)
+    tool_schemas = {}
+    for event in _events(recording, "LLM", "start"):
+        for tool in event.get("payload", {}).get("tools", []):
+            function = tool.get("function", {})
+            if function.get("name") in observed_tools:
+                tool_schemas[function["name"]] = function.get("parameters", {})
+    if observed_tools - tool_schemas.keys():
+        raise ValueError("recorded Tool schema is missing")
     # Observed names are fixtures only. The expected contract comes from the
     # explicit review artifact, so a bad trace cannot become its own oracle.
     history = candidate.get("history_snapshot")
@@ -158,7 +176,8 @@ def register_candidate(candidate: dict[str, Any], recording: dict[str, Any], exp
     )
     turn = {"id": "t1", "input": input_text, "session": "candidate",
             "expected_status": status, "provider": providers}
-    fixtures = {"recorded_tools": recorded_tools, "observed_tools": sorted(observed_tools),
+    fixtures = {"recorded_tools": recorded_tools, "tool_schemas": tool_schemas,
+                "observed_tools": sorted(observed_tools),
                 "source_invocation_id": invocation.get("invocationId")}
     case = Case(id=case_id, category=category, version=int(expectation.get("version", 1)),
         description=expectation.get("description", f"Reviewed candidate from {invocation.get('invocationId')}"),

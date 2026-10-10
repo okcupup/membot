@@ -24,6 +24,8 @@ def summarize(results):
     invocations = [row for result in results for row in result["invocations"]]
     business = [result for result in results if result["business_eligible"]]
     tools = [result["tools"] for result in results if result["tools"]["eligible"]]
+    called_cases = [tool for tool in tools if tool["expected_calls"] > 0]
+    no_call_cases = [tool for tool in tools if tool["expected_calls"] == 0]
     matched = sum(result["tools"]["matched_calls"] for result in results)
     expected = sum(result["tools"]["expected_calls"] for result in results)
     observed = sum(result["tools"]["observed_calls"] for result in results)
@@ -48,6 +50,8 @@ def summarize(results):
             "admission": admission,
             "business_task_success_rate": ratio(sum(r["passed"] for r in business), len(business)),
             "strict_tool_accuracy": ratio(sum(t["passed"] for t in tools), len(tools)),
+            "tool_call_case_accuracy": ratio(sum(t["passed"] for t in called_cases), len(called_cases)),
+            "no_tool_policy_accuracy": ratio(sum(t["passed"] for t in no_call_cases), len(no_call_cases)),
             "call_precision": ratio(matched, observed), "call_recall": ratio(matched, expected),
             "call_name_recall": ratio(sum(r["tools"]["name_matched_calls"] for r in results), expected),
             "timeout_rate": ratio(counts["timeout"], counts["accepted"]),

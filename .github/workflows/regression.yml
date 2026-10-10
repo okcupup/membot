@@ -1,0 +1,183 @@
+name: Membot engineering regression
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_real:
+        description: Run budgeted evaluation with reviewed models and labels
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      real: ${{ steps.paths.outputs.real }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: paths
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          python - <<'PY'
+          import os, re, subprocess
+          base = os.environ.get("BASE_SHA", "")
+          if not base or set(base) == {"0"}:
+              base = "HEAD^"
+          result = subprocess.run(["git", "diff", "--name-only", base, "HEAD"], capture_output=True, text=True)
+          paths = result.stdout.splitlines()
+          relevant = re.compile(r"^(agent/(tools/|context\.py|loop\.py)|providers/|templates/|skills/|evaluation/|config/)")
+          changed = result.returncode != 0 or any(relevant.match(path) for path in paths)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"real={str(changed).lower()}\n")
+          PY
+
+  deterministic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      LITELLM_LOCAL_MODEL_COST_MAP: "True"
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install locked runtime and test dependencies
+        run: |
+          python -m pip install -r deploy/requirements.lock
+          python -m pip install pytest==9.1.1 pytest-asyncio==1.4.0 ruff==0.16.10
+      - name: Run repeated deterministic cases
+        run: python scripts/evaluate_cases.py --mode deterministic --assert-count 32 --repeat 2 --assert-report --output /tmp/membot-m6-artifacts/current.json
+      - name: Build frozen reference and compare paired cases
+        env:
+          BASE_SHA: ${{ vars.MEMBOT_EVAL_BASELINE_SHA || github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          python - <<'PY'
+          import json, os, pathlib, subprocess, sys
+          base = os.environ.get("BASE_SHA", "")
+          if not base or set(base) == {"0"}:
+              base = "HEAD^"
+          base = subprocess.check_output(["git", "rev-parse", base], text=True).strip()
+          artifact = pathlib.Path("/tmp/membot-m6-artifacts")
+          if subprocess.run(["git", "cat-file", "-e", f"{base}:scripts/evaluate_cases.py"]).returncode:
+              (artifact / "comparison-bootstrap.json").write_text(json.dumps({"status": "not_compared", "reason": "reference predates M6", "base_sha": base}))
+              print("::notice::Reference predates M6; retained explicit bootstrap evidence, no paired comparison claimed")
+          else:
+              reference = "/tmp/membot-m6-reference"
+              subprocess.run(["git", "worktree", "add", "--detach", reference, base], check=True)
+              subprocess.run([sys.executable, "scripts/evaluate_cases.py", "--repeat", "2", "--assert-count", "32",
+                  "--output", str(artifact / "reference.json"), "--write-baseline", str(artifact / "baseline.json")],
+                  cwd=reference, env=dict(os.environ, PYTHONPATH=reference), check=True)
+              subprocess.run([sys.executable, "scripts/evaluate_cases.py", "--mode", "baseline", "--assert-report",
+                  "--baseline", str(artifact / "baseline.json"), "--report", str(artifact / "current.json"),
+                  "--output", str(artifact / "comparison.json")], check=True)
+          PY
+      - name: Run regression tests
+        run: python -m pytest -q tests/regression
+      - name: Lint evaluator
+        run: ruff check evaluation scripts/evaluate_cases.py scripts/wheel_check.py tests/regression
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deterministic-raw-and-paired-${{ github.run_id }}
+          path: /tmp/membot-m6-artifacts/
+          retention-days: 30
+
+  queue-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16.8-alpine3.21
+        env:
+          POSTGRES_USER: membot
+          POSTGRES_PASSWORD: membot
+          POSTGRES_DB: membot
+        ports: ["55432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U membot -d membot"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+      redis:
+        image: redis:7.4.2-alpine3.21
+        ports: ["56379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      DATABASE_URL: postgresql://membot:membot@127.0.0.1:55432/membot
+      REDIS_URL: redis://127.0.0.1:56379/0
+      LITELLM_LOCAL_MODEL_COST_MAP: "True"
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -r deploy/requirements.lock
+      - run: python -m pip install pytest==9.1.1 pytest-asyncio==1.4.0
+      - run: python scripts/evaluate_cases.py --mode queue --assert-count 12 --repeat 2 --assert-report --output /tmp/membot-m6-queue/queue.json
+      - run: python -m pytest -q -rs --junitxml=/tmp/membot-m6-queue/tests.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: queue-raw-${{ github.run_id }}
+          path: /tmp/membot-m6-queue/
+          retention-days: 30
+
+  real-model:
+    needs: changes
+    if: >-
+      ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+          && ((vars.MEMBOT_RUN_REAL_EVAL == 'true' && needs.changes.outputs.real == 'true')
+              || (github.event_name == 'workflow_dispatch' && inputs.run_real)) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      MEMBOT_EVAL_API_KEY: ${{ secrets.MEMBOT_EVAL_API_KEY }}
+      MEMBOT_JUDGE_API_KEY: ${{ secrets.MEMBOT_JUDGE_API_KEY }}
+      LITELLM_LOCAL_MODEL_COST_MAP: "True"
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -r deploy/requirements.lock
+      - name: Materialize reviewed private config without printing secrets
+        env:
+          REAL_CONFIG_JSON: ${{ secrets.MEMBOT_REAL_EVAL_CONFIG_JSON }}
+          JUDGE_LABELS_JSON: ${{ secrets.MEMBOT_JUDGE_LABELS_JSON }}
+        run: |
+          python - <<'PY'
+          import json, os, pathlib
+          if not os.environ.get("REAL_CONFIG_JSON") or not os.environ.get("JUDGE_LABELS_JSON"):
+              raise SystemExit("real-eval config and human-confirmed Judge labels secrets are required")
+          config = json.loads(os.environ["REAL_CONFIG_JSON"])
+          config["labels_file"] = "/tmp/membot-judge-labels.json"
+          for path, value in (("/tmp/membot-real-config.json", config),
+                              ("/tmp/membot-judge-labels.json", json.loads(os.environ["JUDGE_LABELS_JSON"]))):
+              pathlib.Path(path).write_text(json.dumps(value))
+              pathlib.Path(path).chmod(0o600)
+          PY
+      - run: python scripts/evaluate_cases.py --mode real --real-config /tmp/membot-real-config.json --repeat 3 --assert-report --output /tmp/membot-m6-real/real.json
+      - name: Compare reviewed real baseline when configured
+        if: ${{ vars.MEMBOT_REAL_BASELINE_FILE != '' }}
+        env:
+          REAL_BASELINE: ${{ vars.MEMBOT_REAL_BASELINE_FILE }}
+        run: python scripts/evaluate_cases.py --mode baseline --assert-report --baseline "$REAL_BASELINE" --report /tmp/membot-m6-real/real.json --output /tmp/membot-m6-real/comparison.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: real-raw-and-calibration-${{ github.run_id }}
+          path: /tmp/membot-m6-real/
+          retention-days: 30

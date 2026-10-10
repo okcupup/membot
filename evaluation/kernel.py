@@ -16,12 +16,21 @@ from membot.agent.loop import AgentLoop
 from membot.bus.events import InboundMessage
 from membot.bus.queue import MessageBus
 
-from .fixtures import FixtureProvider, fixture_registry, prepare_workspace
+from .fixtures import FixtureProvider, RecordedFixtureRegistry, fixture_registry, prepare_workspace
 from .schema import Case
 
 
 class ObservedAgent(AgentLoop):
     """Observation hook only; all execution and persistence use production code."""
+
+    def _build_invocation_tools(self, context):
+        tools = super()._build_invocation_tools(context)
+        if isinstance(self.tools, RecordedFixtureRegistry):
+            recorded = RecordedFixtureRegistry()
+            for _, tool in tools.items():
+                recorded.register(tool)
+            return recorded
+        return tools
 
     async def _run_agent_loop(self, *args, **kwargs):
         result = await super()._run_agent_loop(*args, **kwargs)
@@ -183,6 +192,10 @@ async def run_kernel(case: Case, *, repeat: int = 0, provider=None, fault=None, 
                                  "content": message.content})
         if case.scenario == "serial":
             contracts.append({"name": "acceptance_order", "passed": provider.starts == [t.input for t in case.turns]})
+        if fault == "wrong_status":
+            for row in observations.values():
+                if row["status"] == "FAILED":
+                    row["status"] = "SUCCEEDED"
         return {"case_id": case.id, "case_hash": case.case_hash, "repeat": repeat,
                 "mode": "deterministic", "invocations": list(observations.values()),
                 "contracts": contracts, "outbound": outbound}

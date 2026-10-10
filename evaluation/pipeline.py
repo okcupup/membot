@@ -35,7 +35,7 @@ async def run_suite(cases, *, mode="deterministic", repetitions=1, fault=None,
                 observed = await real_runtime.execute(case, repeat=repeat)
             else:
                 observed = await run_kernel(case, repeat=repeat, fault=fault)
-            result = grade(case, observed, fault=fault)
+            result = grade(case, observed)
             if mode == "real" and result["judge_required"]:
                 await real_runtime.judge(case, result)
             results.append(result)

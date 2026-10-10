@@ -115,6 +115,7 @@ dev = [
 membot = "membot.cli.commands:app"
 membot-service = "membot.service.entrypoints:main"
 membot-health = "membot.service.health:main"
+membot-eval = "membot.evaluation.cli:main"
 
 # Third-party tool plugins register here.  Built-in tools are discovered
 # automatically via pkgutil scanning in ToolLoader.discover().
@@ -165,7 +166,24 @@ packages = ["membot"]
 "session" = "membot/session"
 "utils" = "membot/utils"
 "service" = "membot/service"
-"evaluation" = "membot/evaluation"
+"evaluation/__init__.py" = "membot/evaluation/__init__.py"
+"evaluation/artifacts.py" = "membot/evaluation/artifacts.py"
+"evaluation/baseline.py" = "membot/evaluation/baseline.py"
+"evaluation/candidates.py" = "membot/evaluation/candidates.py"
+"evaluation/cli.py" = "membot/evaluation/cli.py"
+"evaluation/fixtures.py" = "membot/evaluation/fixtures.py"
+"evaluation/grading.py" = "membot/evaluation/grading.py"
+"evaluation/judge.py" = "membot/evaluation/judge.py"
+"evaluation/kernel.py" = "membot/evaluation/kernel.py"
+"evaluation/metrics.py" = "membot/evaluation/metrics.py"
+"evaluation/pipeline.py" = "membot/evaluation/pipeline.py"
+"evaluation/queue.py" = "membot/evaluation/queue.py"
+"evaluation/real.py" = "membot/evaluation/real.py"
+"evaluation/schema.py" = "membot/evaluation/schema.py"
+"evaluation/prompt.md" = "membot/evaluation/prompt.md"
+"evaluation/real.example.json" = "membot/evaluation/real.example.json"
+"evaluation/judge_labels.json" = "membot/evaluation/judge_labels.json"
+"evaluation/cases" = "membot/evaluation/cases"
 "templates" = "membot/templates"
 "skills" = "membot/skills"
 

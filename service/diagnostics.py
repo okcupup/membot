@@ -118,7 +118,7 @@ def timing_summary(recording: dict[str, Any]) -> dict[str, Any]:
         "execution_ms": execution, **{key: round(value, 3) for key, value in totals.items()},
         "other_execution_ms": round(max(0.0, execution - accounted), 3) if execution is not None else None,
         "failure_nodes": failures,
-        "incomplete_spans": [{"event_type": key[0], "span_id": key[1], "sequence": event["sequence"]}
+        "incomplete_spans": [{"event_type": key[0], "span_id": key[1], "sequence": event.get("sequence")}
                              for key, event in opened.items()],
         "retention_gaps": recording.get("retention_gaps", False),
         "recording_limited": recording.get("recording_limited", False),

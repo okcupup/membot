@@ -30,7 +30,7 @@ async def test_real_agent_loop_fixture_contract(case):
 ])
 async def test_intentional_defects_fail_then_correct_cases_pass(case_id, fault):
     case = next(case for case in CASES if case.id == case_id)
-    broken = grade(case, await run_kernel(case, fault=fault), fault=fault)
+    broken = grade(case, await run_kernel(case, fault=fault))
     fixed = grade(case, await run_kernel(case))
     assert not broken["passed"]
     assert fixed["passed"]

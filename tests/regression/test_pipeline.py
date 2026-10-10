@@ -156,6 +156,73 @@ async def test_tool_accuracy_checks_arguments_order_extra_and_forbidden_calls():
     assert "forbidden Tool executed" in grade_tools(case, broken)["reasons"]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fault", ["span", "id", "truncated", "missing_turn", "missing_context", "null_span", "wrong_type"])
+async def test_incomplete_diagnostic_evidence_cannot_pass(fault):
+    case = CASES["context-three-serial"] if fault == "missing_context" else CASES["tool-read"]
+    observed = await run_kernel(case)
+    row = observed["invocations"][0]
+    if fault == "span":
+        row["events"] = [event for event in row["events"]
+                         if not (event["event_type"] == "TOOL" and event["step"] == "end")]
+    elif fault == "id":
+        row["events"][-1]["traceId"] = "another-task"
+    elif fault == "truncated":
+        row["events"][-1]["payload"]["truncated"] = True
+    elif fault == "missing_context":
+        for item in observed["invocations"]:
+            item["events"] = [event for event in item["events"] if event["event_type"] != "CONTEXT"]
+    elif fault in {"null_span", "wrong_type"}:
+        ending = next(event for event in row["events"] if event["event_type"] == "TOOL" and event["step"] == "end")
+        if fault == "wrong_type":
+            ending["event_type"] = "LLM"
+        else:
+            ending["span_id"] = None
+            next(event for event in row["events"] if event["event_type"] == "TOOL" and event["step"] == "start")["span_id"] = None
+    else:
+        observed["invocations"].clear()
+    assert not grade(case, observed)["passed"]
+
+
+@pytest.mark.asyncio
+async def test_equal_input_turns_use_independent_request_fixtures():
+    data = CASES["context-three-serial"].model_dump()
+    data["input"] = "same question"
+    for index, turn in enumerate(data["turns"]):
+        turn.update(input="same question", provider=[{"content": f"answer-{index}"}])
+    from membot.evaluation.schema import Case
+    observed = await run_kernel(Case.model_validate(data))
+    assert [row["final"] for row in observed["invocations"]] == ["answer-0", "answer-1", "answer-2"]
+
+
+@pytest.mark.asyncio
+async def test_judge_cannot_cite_fabricated_evidence():
+    result = await evaluate(JudgeFixture([verdict(True, "not in the actual answer")]),
+                            rubric="cite actual result", input="test", final="actual result", events=[])
+    assert not result["passed"] and result["error"]
+
+
+@pytest.mark.asyncio
+async def test_forbidden_only_tools_are_in_strict_metric_and_boolean_json_is_exact():
+    case = CASES["basic-json"]
+    observed = await run_kernel(case)
+    result = grade(case, observed)
+    metrics = summarize([result])
+    assert metrics["strict_tool_accuracy"] == {"numerator": 1, "denominator": 1, "value": 1.0}
+    assert metrics["no_tool_policy_accuracy"]["denominator"] == 1
+    assert metrics["tool_call_case_accuracy"]["denominator"] == 0
+    observed["invocations"][0]["final"] = '{"active":1,"name":"Membot"}'
+    assert not grade(case, observed)["passed"]
+
+
+def test_rubric_only_fixture_case_cannot_bypass_judge():
+    from membot.evaluation.schema import Case
+    data = CASES["basic-summary"].model_dump()
+    data.update(assertions=[], real_model=False)
+    with pytest.raises(ValueError, match="real Judge"):
+        Case.model_validate(data)
+
+
 def test_metric_denominators_and_missing_durations_are_explicit():
     assert distribution([1, 2, None, 3, 4, 100])["p95_ms"] == 100
     assert distribution([])["mean_ms"] is None

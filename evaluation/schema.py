@@ -104,6 +104,8 @@ class Case(StrictModel):
             raise ValueError("assertion references an unknown turn")
         if not self.assertions and not self.judge_rubric:
             raise ValueError("status alone is not a task oracle")
+        if not self.real_model and not self.assertions:
+            raise ValueError("deterministic Cases require result, history or error assertions; a rubric needs a real Judge")
         if self.real_model and not self.judge_rubric and not self.assertions:
             raise ValueError("real-model cases need an oracle")
         if self.real_model and self.real_budget is None:

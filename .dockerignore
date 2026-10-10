@@ -15,3 +15,7 @@ learning_docs
 .pytest_cache
 .ruff_cache
 dist
+evaluation/reports
+evaluation/baselines
+evaluation/candidates
+evaluation/*.private.json

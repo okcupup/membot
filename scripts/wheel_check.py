@@ -22,20 +22,28 @@ def main():
         with zipfile.ZipFile(wheel) as archive:
             names = archive.namelist()
             for required in ("membot/agent/loop.py", "membot/cli/commands.py", "membot/service/entrypoints.py",
-                             "membot/agent/persistence/migrations/0003_worker_health.sql", "membot/templates/AGENTS.md"):
+                             "membot/agent/persistence/migrations/0003_worker_health.sql", "membot/templates/AGENTS.md",
+                             "membot/evaluation/schema.py", "membot/evaluation/cases/basic.json"):
                 assert required in names, required
             assert not any("__pycache__" in path or path.endswith(".pyc") for path in names)
+            assert not any(path.startswith(("membot/evaluation/reports/", "membot/evaluation/baselines/",
+                                            "membot/evaluation/candidates/"))
+                           or path.endswith(".private.json") for path in names)
         venv.create(directory / "clean", with_pip=True)
         python = directory / "clean" / "bin" / "python"
         subprocess.run([str(python), "-m", "pip", "install", "-r", str(ROOT / "deploy/requirements.lock")],
                        cwd=directory, env=env, check=True)
         subprocess.run([str(python), "-m", "pip", "install", "--no-deps", str(wheel)], cwd=directory, env=env, check=True)
         subprocess.run([str(python), "-m", "pip", "check"], cwd=directory, env=env, check=True)
-        subprocess.run([str(python), "-c", "import membot.agent.loop, membot.cli.commands, membot.service.entrypoints; "
+        subprocess.run([str(python), "-c", "import membot.agent.loop, membot.cli.commands, membot.service.entrypoints, membot.evaluation.cli; "
             "from importlib.resources import files; assert (files('membot.agent.persistence')/'migrations'/'0003_worker_health.sql').is_file(); "
+            "from membot.evaluation.schema import load_cases; assert len(load_cases()) >= 32; "
             "print('clean installed wheel:', membot.agent.loop.__file__)"], cwd=directory, env=env, check=True)
         subprocess.run([str(directory / "clean" / "bin" / "membot"), "--help"], cwd=directory, env=env, check=True)
         subprocess.run([str(directory / "clean" / "bin" / "membot-service"), "check-config"], cwd=directory, env=env, check=True)
+        subprocess.run([str(directory / "clean" / "bin" / "membot-eval"), "--mode", "deterministic",
+                        "--ids", "basic-echo", "--output", str(directory / "installed-eval.json")],
+                       cwd=directory, env=env, check=True)
 
 
 if __name__ == "__main__":

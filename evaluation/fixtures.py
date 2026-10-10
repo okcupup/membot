@@ -167,22 +167,20 @@ class FixtureTool(Tool):
         raise RuntimeError("unsupported safe fixture Tool")
 
 
-def fixture_registry(case: Case, workspace: Path, bus, *, fault=None) -> ToolRegistry:
-    class RecordedFixtureRegistry(ToolRegistry):
-        async def execute(self, name, params):
-            # Diagnostic events store the exact visible result after the normal
-            # registry error wrapper. Do not append its hint a second time.
-            if case.fixtures.get("recorded_tools"):
-                tool = self.get(name)
-                if tool is None:
-                    raise RuntimeError(f"recorded adapter for Tool {name} is missing")
-                errors = tool.validate_params(params)
-                if errors:
-                    raise RuntimeError("recorded Tool argument validation failed: " + "; ".join(errors))
-                return await tool.execute(**params)
-            return await super().execute(name, params)
+class RecordedFixtureRegistry(ToolRegistry):
+    async def execute(self, name, params):
+        # Persisted results already include the production registry error hint.
+        tool = self.get(name)
+        if tool is None:
+            raise RuntimeError(f"recorded adapter for Tool {name} is missing")
+        errors = tool.validate_params(params)
+        if errors:
+            raise RuntimeError("recorded Tool argument validation failed: " + "; ".join(errors))
+        return await tool.execute(**params)
 
-    registry = RecordedFixtureRegistry()
+
+def fixture_registry(case: Case, workspace: Path, bus, *, fault=None) -> ToolRegistry:
+    registry = RecordedFixtureRegistry() if case.fixtures.get("recorded_tools") else ToolRegistry()
     for name in case.tools.allowed_tools:
         if name == "message" and name not in case.fixtures.get("recorded_tools", {}):
             registry.register(MessageTool(send_callback=bus.publish_outbound if bus else None))

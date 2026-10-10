@@ -12,7 +12,6 @@ from pathlib import Path
 
 from membot.agent.redaction import redact_data
 
-from .fixtures import fixture_registry
 from .schema import digest
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -38,6 +37,8 @@ def write_json(path: Path, value):
 
 
 def provenance(cases, mode, repetitions, *, real_config=None):
+    from .fixtures import fixture_registry
+
     def git(*args):
         result = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, check=False)
         return result.stdout.strip() if result.returncode == 0 else "unavailable"

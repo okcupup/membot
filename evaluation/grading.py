@@ -13,6 +13,9 @@ def subset(expected: Any, actual: Any) -> bool:
     if isinstance(expected, dict):
         return isinstance(actual, dict) and all(key in actual and subset(value, actual[key])
                                                for key, value in expected.items())
+    if isinstance(expected, list):
+        return isinstance(actual, list) and len(expected) == len(actual) \
+            and all(subset(left, right) for left, right in zip(expected, actual, strict=True))
     # Keep booleans distinct from integers in key argument assertions.
     if type(expected) in {int, float} and type(actual) in {int, float}:
         return expected == actual
@@ -90,13 +93,13 @@ def grade_tools(case: Case, observation: dict) -> dict:
                 reasons.append(f"incorrect Tool order or arguments for {turn.id}")
                 break
     eligible = case.tools.evaluate and bool(case.tools.required_tools or case.tools.allowed_tools
-                                            or case.tools.expected_calls)
+                                            or case.tools.forbidden_tools or case.tools.expected_calls)
     return {"eligible": eligible, "passed": not reasons, "reasons": reasons,
             "calls": calls, "matched_calls": len(used), "observed_calls": len(calls),
             "expected_calls": len(expected), "name_matched_calls": names_matched}
 
 
-def grade(case: Case, observation: dict, *, fault=None) -> dict:
+def grade(case: Case, observation: dict) -> dict:
     """Judge is a later gate; a model cannot override a failed deterministic gate."""
     observation = {**observation}
     checks = list(observation["contracts"])
@@ -107,20 +110,19 @@ def grade(case: Case, observation: dict, *, fault=None) -> dict:
     for turn in case.turns:
         row = invocations.get(turn.id)
         status = row.get("status") if row else None
-        if fault == "wrong_status" and status == "FAILED":
-            status = "SUCCEEDED"
         checks.append({"name": f"status:{turn.id}", "passed": status == turn.expected_status,
                        "expected": turn.expected_status, "actual": status})
         if row:
             starts = [event for event in row["events"] if event["event_type"] in {"LLM", "TOOL"}
                       and event.get("step") == "start"]
-            endings = {event.get("span_id") for event in row["events"]
+            endings = {(event["event_type"], event.get("span_id")) for event in row["events"]
                        if event["event_type"] in {"LLM", "TOOL"} and event.get("step") in {"end", "error"}}
             checks.append({"name": f"evidence:{turn.id}", "passed":
                 bool(row.get("events")) and not row.get("harness_error")
                 and not row.get("recording_limited") and not row.get("retention_gaps")
                 and not any(event.get("payload", {}).get("truncated") for event in row["events"])
-                and all(event.get("span_id") in endings for event in starts)
+                and all(event.get("span_id") and (event["event_type"], event["span_id"]) in endings
+                        for event in starts)
                 and all(all(event.get(key) == row.get(key) for key in
                             ("invocationId", "requestId", "traceId", "sessionId"))
                         for event in row["events"])})
@@ -145,12 +147,12 @@ def grade(case: Case, observation: dict, *, fault=None) -> dict:
         elif kind == "json_equals":
             try:
                 actual = json.loads(final)
-                passed = actual == wanted
+                passed = subset(wanted, actual) and subset(actual, wanted)
             except (ValueError, TypeError):
                 passed = False
         elif kind in {"history_contains", "history_absent"}:
             actual = history
-            passed = wanted in history if kind == "history_contains" else wanted not in history
+            passed = bool(context) and (wanted in history if kind == "history_contains" else wanted not in history)
         elif kind == "tool_result_contains":
             actual = [event.get("payload", {}).get("result", "") for event in events
                       if event["event_type"] == "TOOL" and event.get("step") in {"end", "error"}]
